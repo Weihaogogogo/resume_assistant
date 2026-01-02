@@ -1,4 +1,4 @@
-# DeepAgents - AI 简历助手
+# AI 简历助手
 
 基于 LangGraph + Vue3 的智能简历助手，通过对话帮助用户完善简历内容，支持岗位 JD 匹配分析和 PDF 导出。
 
