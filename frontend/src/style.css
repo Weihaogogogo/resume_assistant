@@ -1,0 +1,147 @@
+:root {
+  /* 中英文混合字体栈，确保前端预览和PDF导出字体一致 */
+  font-family: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  line-height: 1.6;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: #333;
+  background-color: #f8f9fa;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  
+  /* 全局颜色变量 */
+  --primary-color: #333333;
+  --primary-hover: #555555;
+  --secondary-color: #f8f9fa;
+  --accent-color: #e0e0e0;
+  --text-primary: #212529;
+  --text-secondary: #6c757d;
+  --text-muted: #95a5a6;
+  --border-color: #eaeaea;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 6px 20px rgba(0, 0, 0, 0.12);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 50%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  font-weight: 500;
+  color: var(--primary-color);
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+a:hover {
+  color: var(--primary-hover);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--secondary-color);
+  color: var(--text-primary);
+  overflow: hidden; /* 禁止页面级别滚动，由内部容器处理滚动 */
+}
+
+h1 {
+  font-size: 2em;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+button {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: var(--secondary-color);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+button:hover {
+  background-color: var(--accent-color);
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+button:focus,
+button:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.card {
+  padding: 2em;
+  background-color: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+#app {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+}
+
+/* 全局滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+  min-height: 30px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* 响应式调整 */
+@media (prefers-color-scheme: light) {
+  :root {
+    color: var(--text-primary);
+    background-color: var(--secondary-color);
+  }
+  a:hover {
+    color: var(--primary-hover);
+  }
+  button {
+    background-color: var(--secondary-color);
+  }
+}
+
+/* 分页元素的全局样式 - 必须在这里定义才能应用到fixed position元素 */
+.pageable-item {
+  margin-bottom: var(--module-margin);
+}
+
+/* 打印模式样式 - PDF导出已改为后端WeasyPrint生成，此处保留基础设置 */
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+}

@@ -1,0 +1,730 @@
+import os
+import json
+import httpx
+import time
+from dotenv import load_dotenv
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import ToolNode
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from dataclasses import dataclass
+
+# 导入自定义工具
+from tools import list_directory, read_file, write_file
+
+# 导入Pydantic用于数据验证
+from pydantic import BaseModel, Field
+from typing import List, Optional
+
+# 加载环境变量
+load_dotenv()
+
+# 定义Pydantic模型用于简历JSON结构验证
+class BasicInfo(BaseModel):
+    name: str = Field(..., description="姓名")
+    gender: str = Field(..., description="性别")
+    phone: str = Field(..., description="手机号")
+    email: str = Field(..., description="邮箱")
+    target_position: str = Field(..., description="期望岗位")
+
+class Thesis(BaseModel):
+    title: str = Field(..., description="论文标题")
+    details: List[str] = Field(default_factory=list, description="论文详细内容")
+
+class Education(BaseModel):
+    school_name: str = Field(..., description="学校名称")
+    major: str = Field(..., description="专业")
+    degree: str = Field(..., description="学历")
+    date_range: List[str] = Field(..., description="就读时间")
+    school_tags: List[str] = Field(default_factory=list, description="学校性质标签")
+    theses: List[Thesis] = Field(default_factory=list, description="论文列表")
+
+class WorkExperience(BaseModel):
+    company_name: str = Field(..., description="公司名称")
+    job_title: str = Field(..., description="职位名称")
+    date_range: List[str] = Field(..., description="就职时间")
+    job_type: str = Field(..., description="工作类型")
+    details: List[str] = Field(default_factory=list, description="工作详细内容")
+
+class ProjectExperience(BaseModel):
+    project_name: str = Field(..., description="项目名称")
+    role: str = Field(..., description="项目角色")
+    date_range: List[str] = Field(..., description="项目时间")
+    details: List[str] = Field(default_factory=list, description="项目详细内容")
+
+class Others(BaseModel):
+    skills: List[str] = Field(default_factory=list, description="技能")
+    certificates: List[str] = Field(default_factory=list, description="证书")
+    languages: List[str] = Field(default_factory=list, description="语言")
+
+class Resume(BaseModel):
+    basics: BasicInfo = Field(..., description="基本信息")
+    education: List[Education] = Field(default_factory=list, description="教育背景")
+    work_experience: List[WorkExperience] = Field(default_factory=list, description="工作经历")
+    project_experience: List[ProjectExperience] = Field(default_factory=list, description="项目经历")
+    others: Others = Field(default_factory=Others, description="其他信息")
+    self_evaluation: List[str] = Field(default_factory=list, description="自我评价")
+
+# 配置OpenAI客户端
+httpx_client = httpx.Client(
+    timeout=httpx.Timeout(90.0),
+    limits=httpx.Limits(max_connections=10),
+)
+
+# Conversation LLM - 负责对话和读取
+conversation_llm = ChatOpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url=os.getenv("BASE_URL"),
+    model="gemini-3-flash-preview",
+    http_client=httpx_client,
+    max_retries=3,
+    temperature=0.1
+)
+
+# Formatter LLM - 负责格式化 JSON 和写入
+formatter_llm = ChatOpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url=os.getenv("BASE_URL"),
+    model="gemini-3-flash-preview",
+    http_client=httpx_client,
+    max_retries=3,
+    temperature=0.0  # 格式化需要更低温度
+)
+
+# =============================================
+# Prompts
+# =============================================
+
+conversation_prompt = """# Role
+你是资深职业顾问，通过对话帮助用户完善简历。
+
+# 核心规则
+- 专业、鼓励、亲切，自然对话
+- **先读后缓存**：只有当系统提示"resume_data 为空"或用户明确要求读取简历时，才需要调用 read_file；读取后会自动存入 state.resume_data，后续对话直接使用缓存
+- **确认后转向 formatter**：当用户明确表示同意你的修改建议（如"好的"、"可以"、"开始吧"、"确认"等），或在消息中直接提出明确的修改需求（如"把xxx改成yyy"），你需要在回复末尾添加 "[转向 formatter_llm]" 标记
+- **不要直接生成 JSON**，只需用自然语言给建议
+
+# 你的工作流程
+1. 用户打招呼 → 欢迎并询问需求
+2. 用户请求建议 → 检查 resume_data 状态
+   - 如果消息历史中已读取过简历，直接基于缓存内容回答
+   - 如果 resume_data 为空且用户需要查看简历内容，调用 read_file
+3. 用户提出修改需求 → 理解需求，给出建议，询问是否确认
+4. 用户确认修改 → 在回复末尾添加 "[转向 formatter_llm]" 标记，路由会自动处理
+5. 冲突检测：如果发现重复或矛盾，暂停并询问用户
+6. STAR 挖掘：主动追问具体细节和量化结果
+
+# 如何判断用户是否确认修改？
+- 用户说"好的"、"可以"、"开始吧"、"确认"、"同意"、"对的"、"没问题"等 → 添加 "[转向 formatter_llm]"
+- 用户直接说"把xxx改成yyy"等明确修改指令 → 添加 "[转向 formatter_llm]"
+- 用户问其他问题 → 不要添加标记
+
+# 禁止行为
+- 不要说"已保存"、"已修改"
+- 不要在保存前说"正在为你更新"
+- 不要输出 JSON 代码块
+- 不要出现任何与 JSON 相关的术语（如"JSON"、"key"、"value"等）
+
+# Resume 数据说明（文字描述）
+简历包含以下模块，用自然语言与用户交流即可：
+- **basics**: 基本信息（姓名、性别、手机、邮箱、期望岗位）
+- **education**: 教育背景（学校、专业、学历、时间、标签、论文）
+- **work_experience**: 工作经历（公司、职位、时间、类型、具体内容）
+- **project_experience**: 项目经历（项目名称、角色、时间、具体内容）
+- **others**: 其他信息（技能、证书、语言）
+- **self_evaluation**: 自我评价
+
+请严格按照上述流程工作。"""
+
+# =============================================
+# Formatter Prompt
+# =============================================
+
+formatter_prompt = """# Role
+你是简历格式化专家，负责将用户的修改意图转化为规范的 JSON 格式，并调用 write_file 工具保存结果。
+
+# 核心规则
+1. 接收 conversation_llm 传递的用户修改内容
+2. 结合 state.resume_data 中已有的简历内容
+3. 将修改内容格式化为符合 JSON schema 的格式
+4. **必须保留原有内容的完整性**，只修改用户明确指定的部分
+5. **调用 write_file 工具**：格式化完成后，必须调用 write_file 工具将 JSON 保存到 resume.json
+
+# JSON 结构规范
+```json
+{
+  "basics": {
+    "name": "姓名",
+    "gender": "性别",
+    "phone": "手机号",
+    "email": "邮箱",
+    "target_position": "期望岗位"
+  },
+  "education": [{
+    "school_name": "学校",
+    "major": "专业",
+    "degree": "学位",
+    "date_range": ["开始时间", "结束时间"],
+    "school_tags": ["标签1", "标签2"],
+    "theses": []
+  }],
+  "work_experience": [{
+    "company_name": "公司",
+    "job_title": "职位",
+    "date_range": ["开始时间", "结束时间"],
+    "job_type": "实习/全职",
+    "details": ["具体工作内容1", "具体工作内容2"]
+  }],
+  "project_experience": [{
+    "project_name": "项目名称",
+    "role": "角色",
+    "date_range": ["开始时间", "结束时间"],
+    "details": ["具体内容1", "具体内容2"]
+  }],
+  "others": {
+    "skills": ["技能1", "技能2"],
+    "certificates": ["证书1", "证书2"],
+    "languages": ["语言"]
+  },
+  "self_evaluation": ["自我评价1", "自我评价2"]
+}
+```
+
+# 内容编辑自由度
+- **允许**：将长字符串拆分为数组（如 details 数组）
+- **允许（谨慎）**：仅在用户表述明显不完整、模糊或遗漏关键信息时，才进行小幅优化；不要为了"更好看"而改动用户的原意
+- **允许**：补充缺失的元数据（如 date_range）
+- **禁止**：修改用户未指定的字段
+- **禁止**：删除用户未要求删除的内容
+- **禁止**：大段重写用户的原始表述
+
+# 输出格式
+1. 先输出格式化后的完整 JSON
+2. 然后调用 write_file 工具保存结果
+"""
+
+# =============================================
+# LangChain Tools
+# =============================================
+
+@tool
+def read_file_tool(file_path: str = "resume.json") -> str:
+    """读取文件内容"""
+    return read_file(file_path=file_path)
+
+@tool
+def write_file_tool(file_path: str = "resume.json", content: str = "") -> str:
+    """写入 JSON 内容到文件"""
+    import re
+
+    # 1. 清理标记（如果有）
+    content = re.sub(r'```json\s*', '', content)
+    content = re.sub(r'```\s*', '', content)
+    content = re.sub(r'<<[^<>]*>>', '', content)
+    content = re.sub(r'<[^<>]*>', '', content)
+    content = content.strip()
+
+    # 2. 提取 JSON（如果内容前后有说明文字）
+    if not content.startswith('{'):
+        match = re.search(r'\{[\s\S]*\}', content)
+        if match:
+            content = match.group()
+
+    # 3. 保存文件
+    write_file(file_path=file_path, content=content)
+    return "简历已成功保存！"
+
+# Conversation LLM 工具（只用于读取）
+conversation_tools = [read_file_tool]
+
+# Formatter LLM 工具（只用于写入）
+formatter_tools = [write_file_tool]
+
+# =============================================
+# Agent State
+# =============================================
+
+@dataclass
+class AgentState:
+    messages: list
+    resume_data: dict  # 存储简历数据，避免重复读取
+
+# =============================================
+# Nodes
+# =============================================
+
+async def conversation_node(state: AgentState):
+    """Conversation LLM节点，处理对话"""
+    import asyncio
+
+    print("\n" + "=" * 60)
+    print("🔄 [节点进入] conversation_llm")
+    print(f"📨 收到消息数: {len(state.messages)}")
+    print(f"📦 resume_data: {'有数据' if state.resume_data else '为空'}")
+    print("=" * 60)
+
+    # 初始化 resume_data（如果不存在）
+    if not hasattr(state, 'resume_data') or state.resume_data is None:
+        state = AgentState(messages=state.messages, resume_data={})
+
+    last_msg = state.messages[-1] if state.messages else None
+
+    # 场景1: read_file 结果返回 → 更新 resume_data
+    if isinstance(last_msg, ToolMessage) and last_msg.name == 'read_file_tool':
+        import json
+        print(f"📤 [read_file 结果] 更新 resume_data")
+        try:
+            content = last_msg.content
+            # 移除 "文件 xxx 的内容：" 前缀
+            if "的内容：" in content:
+                content = content.split("的内容：", 1)[1].strip()
+            resume_data = json.loads(content)
+            print(f"✅ 成功解析 resume_data，包含 {len(resume_data)} 个顶级字段")
+        except Exception as e:
+            print(f"❌ JSON 解析错误: {e}")
+            print(f"原始内容: {content[:200] if 'content' in dir() and len(content) > 200 else content}")
+            resume_data = {}
+
+        return {
+            "messages": state.messages + [AIMessage(content="已读取简历，现在可以开始分析了。")],
+            "resume_data": resume_data
+        }
+
+    # 场景2: write_file 结果返回（不应该出现在这里，但处理一下）
+    if isinstance(last_msg, ToolMessage) and last_msg.name == 'write_file_tool':
+        print(f"✅ [write_file 结果] {last_msg.content}")
+        return {
+            "messages": state.messages + [AIMessage(content=last_msg.content)],
+            "resume_data": state.resume_data
+        }
+
+    # 正常对话流程
+    # 如果 resume_data 为空，添加提示到 system message
+    system_content = conversation_prompt
+    if not state.resume_data:
+        system_content += "\n\n[重要提示：当前 resume_data 为空，如果用户需要查看简历内容，请调用 read_file 工具读取 resume.json 文件。]"
+    messages = [SystemMessage(content=system_content)] + state.messages
+
+    print(f"📤 [准备调用 LLM] 消息数: {len(messages)}")
+    print(f"   最后消息类型: {type(last_msg).__name__ if last_msg else 'None'}")
+
+    # 检测用户是否确认修改（需要转向 formatter）
+    # 策略：让 LLM 通过 "[转向 formatter_llm]" 标记来判断，我们只需要在消息中保留这个标记
+
+    try:
+        conversation_llm_with_tools = conversation_llm.bind_tools(
+            conversation_tools,
+            tool_choice="auto"
+        )
+
+        print("⏳ [等待 LLM 响应...]")
+        try:
+            if hasattr(asyncio, 'timeout'):
+                async with asyncio.timeout(60.0):
+                    response = await conversation_llm_with_tools.ainvoke(messages)
+            else:
+                response = await asyncio.wait_for(
+                    conversation_llm_with_tools.ainvoke(messages),
+                    timeout=60.0
+                )
+        except asyncio.TimeoutError:
+            print("⚠️ Conversation LLM 调用超时")
+            response = AIMessage(content="抱歉，处理时间过长，请稍后重试。")
+
+    except Exception as e:
+        print(f"调试: Conversation LLM 错误: {type(e).__name__}: {e}")
+        response = AIMessage(content=f"抱歉，我遇到了问题，请稍后重试。")
+
+    # 调试：显示响应信息
+    print("\n" + "=" * 60)
+    print("📤 [conversation_llm 响应]")
+    print(f"   内容: {str(response.content)[:100]}...")
+    print(f"   工具调用: {hasattr(response, 'tool_calls') and response.tool_calls}")
+    print("=" * 60)
+
+    # 清理标记，只保留回复内容
+    if hasattr(response, 'content') and response.content:
+        content = response.content
+        import re
+        content = re.sub(r'<<[^<>]*>>', '', content)
+        content = re.sub(r'<[^<>]*>', '', content)
+        content = content.strip()
+        response = AIMessage(content=content)
+
+    print(f"📤 [节点离开] conversation_llm")
+    return {"messages": state.messages + [response], "resume_data": state.resume_data}
+
+# =============================================
+# Custom Tool Node (修复 Gemini API 兼容性问题)
+# =============================================
+
+async def tool_node(state: AgentState):
+    """自定义工具节点"""
+    print("\n" + "=" * 60)
+    print("🔄 [节点进入] tool_node")
+    print("=" * 60)
+
+    last_message = state.messages[-1]
+
+    # 检查是否有工具调用
+    if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
+        print("⚠️ 没有工具调用")
+        return {"messages": state.messages}
+
+    # 执行每个工具调用
+    new_messages = []
+    for tool_call in last_message.tool_calls:
+        # LangChain 格式: tool_call.name 和 tool_call.args
+        tool_name = getattr(tool_call, 'name', None) or tool_call.get('name')
+        tool_args = getattr(tool_call, 'args', None) or tool_call.get('args', {})
+
+        print(f"🔧 执行工具: {tool_name}")
+        print(f"📋 工具参数: {tool_args}")
+
+        # 找到对应的工具函数
+        tool_func = None
+        # 从两个工具列表中查找
+        for t in conversation_tools + formatter_tools:
+            if t.name == tool_name:
+                tool_func = t
+                break
+
+        if not tool_func:
+            print(f"❌ 工具未找到: {tool_name}")
+            result = f"错误: 工具 {tool_name} 不存在"
+        else:
+            try:
+                # 调用工具
+                result = tool_func.invoke(tool_args)
+                print(f"✅ 工具执行成功")
+            except Exception as e:
+                print(f"❌ 工具执行失败: {e}")
+                result = f"错误: {str(e)}"
+
+        # 创建 ToolMessage，确保包含 name 字段
+        tool_message = ToolMessage(
+            content=result,
+            tool_call_id=getattr(tool_call, 'id', '') or tool_call.get('id', ''),
+            name=tool_name  # 关键：确保包含 name 字段
+        )
+        new_messages.append(tool_message)
+
+    print(f"📤 [节点离开] tool_node")
+    return {"messages": state.messages + new_messages, "resume_data": state.resume_data}
+
+# =============================================
+# Formatter Node
+# =============================================
+
+async def formatter_node(state: AgentState):
+    """Formatter LLM 节点，负责格式化 JSON"""
+    import asyncio
+    import re
+    import json
+
+    print("\n" + "=" * 60)
+    print("🔄 [节点进入] formatter_llm")
+    print("=" * 60)
+
+    # 获取用户的修改意图
+    # 策略：找到最近一条明确表达修改意图的消息（用户输入或 AI 总结）
+    user_modification = ""
+    confirmation_words = ['好的', '可以', '是', '开始', '行', '同意', '确认', '对的', '没问题']
+
+    for msg in reversed(state.messages):
+        if isinstance(msg, HumanMessage):
+            content = msg.content.strip()
+            # 如果用户明确说"好的"、"开始吧"等，需要找前面的修改意图
+            if any(word in content for word in confirmation_words):
+                continue  # 跳过确认词，继续往前找
+            else:
+                user_modification = content
+                break
+        elif isinstance(msg, AIMessage) and msg.content:
+            # AI 的回复中如果包含修改意图，优先使用
+            if '修改' in msg.content or '改' in msg.content:
+                user_modification = msg.content
+                break
+
+    # 构建消息
+    resume_data_str = json.dumps(state.resume_data, ensure_ascii=False, indent=2) if state.resume_data else "{}"
+
+    messages = [
+        SystemMessage(content=formatter_prompt),
+        HumanMessage(content=f"""请将以下修改内容格式化为 JSON：
+
+=== 用户修改意图 ===
+{user_modification}
+
+=== 当前简历数据 (state.resume_data) ===
+{resume_data_str}
+
+请直接输出格式化后的完整 JSON。
+""")
+    ]
+
+    # 调用 formatter_llm
+    formatter_llm_with_tools = formatter_llm.bind_tools(
+        formatter_tools,
+        tool_choice="auto"
+    )
+
+    print("⏳ [等待 formatter_llm 响应...]")
+    try:
+        if hasattr(asyncio, 'timeout'):
+            async with asyncio.timeout(60.0):
+                response = await formatter_llm_with_tools.ainvoke(messages)
+        else:
+            response = await asyncio.wait_for(
+                formatter_llm_with_tools.ainvoke(messages),
+                timeout=60.0
+            )
+    except asyncio.TimeoutError:
+        print("⚠️ Formatter LLM 调用超时")
+        response = AIMessage(content="{}")
+
+    # 清理并提取 JSON
+    content = response.content or "{}"
+    content = re.sub(r'```json\s*', '', content)
+    content = re.sub(r'```\s*', '', content)
+    content = content.strip()
+
+    # 提取 JSON
+    if not content.startswith('{'):
+        match = re.search(r'\{[\s\S]*\}', content)
+        if match:
+            content = match.group()
+        else:
+            content = "{}"
+
+    # 尝试解析为 JSON 验证
+    try:
+        json_data = json.loads(content)
+        formatted_content = json.dumps(json_data, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"❌ JSON 解析错误: {e}")
+        formatted_content = "{}"
+
+    print(f"📤 [节点离开] formatter_llm")
+    return {
+        "messages": state.messages + [AIMessage(content=formatted_content, tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else [])],
+        "resume_data": state.resume_data
+    }
+
+# =============================================
+# Routing Functions
+# =============================================
+
+def route_after_conversation(state: AgentState) -> str:
+    """conversation_llm 后的路由"""
+    last_message = state.messages[-1]
+
+    print("\n" + "=" * 60)
+    print("🔀 [路由判断] conversation_llm 返回")
+    content = str(getattr(last_message, 'content', ''))
+    print(f"📝 消息内容: {content[:100]}...")
+    print(f"🔧 工具调用: {hasattr(last_message, 'tool_calls') and last_message.tool_calls}")
+    print("=" * 60)
+
+    # 检查是否需要转向 formatter_llm（用户确认修改）- 优先处理
+    if "[转向 formatter_llm]" in content:
+        print("🎯 路由: 用户确认修改 → formatter_llm")
+        return "formatter_llm"
+
+    # 有工具调用 → tool_node
+    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+        print("🎯 路由: 有工具调用 → tool_node")
+        return "tool_node"
+
+    # 如果最后一条是 ToolMessage（工具刚执行完）→ 继续对话，让 LLM 生成回复
+    if isinstance(last_message, ToolMessage):
+        print("🎯 路由: 工具执行完成 → 继续对话")
+        return "conversation_llm"
+
+    # 无工具调用 → 结束对话
+    print("🎯 路由: 无工具调用 → END")
+    return END
+
+
+def route_after_formatter(state: AgentState) -> str:
+    """formatter_llm 后的路由"""
+    last_message = state.messages[-1]
+
+    print("\n" + "=" * 60)
+    print("🔀 [路由判断] formatter_llm 返回")
+    print("=" * 60)
+
+    # 有工具调用 → tool_node（write_file）
+    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+        print("🎯 路由: 有工具调用 → tool_node")
+        return "tool_node"
+
+    # 无工具调用 → 继续对话
+    print("🎯 路由: 无工具调用 → conversation_llm")
+    return "conversation_llm"
+
+# =============================================
+# Graph Construction
+# =============================================
+
+graph_builder = StateGraph(AgentState)
+
+# 添加节点
+graph_builder.add_node("conversation_llm", conversation_node)
+graph_builder.add_node("formatter_llm", formatter_node)
+graph_builder.add_node("tool_node", tool_node)
+
+# 设置入口点
+graph_builder.set_entry_point("conversation_llm")
+
+# conversation_llm → formatter_llm / tool_node / END
+graph_builder.add_conditional_edges(
+    "conversation_llm",
+    route_after_conversation,
+    {
+        "formatter_llm": "formatter_llm",
+        "tool_node": "tool_node",
+        END: END
+    }
+)
+
+# formatter_llm → tool_node / conversation_llm
+graph_builder.add_conditional_edges(
+    "formatter_llm",
+    route_after_formatter,
+    {
+        "tool_node": "tool_node",
+        "conversation_llm": "conversation_llm"
+    }
+)
+
+# tool_node → conversation_llm（工具执行完后返回结果）
+graph_builder.add_edge("tool_node", "conversation_llm")
+
+# 编译图（带 checkpointer）
+memory = MemorySaver()
+graph = graph_builder.compile(checkpointer=memory)
+
+# =============================================
+# Context Compression
+# =============================================
+
+def compress_context(messages, max_messages=20, keep_recent=5):
+    if len(messages) <= max_messages:
+        return messages
+
+    recent_messages = messages[-keep_recent:]
+    early_messages = messages[:-keep_recent]
+
+    summary_prompt = ChatPromptTemplate.from_messages([
+        ("system", "请你作为对话摘要专家，将下面的对话内容总结为一段简洁明了的摘要，保留关键信息和对话主题。"),
+        ("human", "以下是对话内容：\n{conversation}")
+    ])
+
+    conversation_text = ""
+    for msg in early_messages:
+        if hasattr(msg, "content"):
+            content = msg.content if msg.content else "无内容"
+            if hasattr(msg, "role"):
+                role = msg.role if msg.role else "未知"
+            elif type(msg).__name__ == "SystemMessage":
+                role = "system"
+            elif type(msg).__name__ == "HumanMessage":
+                role = "human"
+            elif type(msg).__name__ == "AIMessage":
+                role = "assistant"
+            else:
+                role = "未知"
+            conversation_text += role + ": " + str(content) + "\n"
+
+    summary_chain = summary_prompt | conversation_llm
+    summary_result = summary_chain.invoke({"conversation": conversation_text})
+    early_summary = "以下是早期对话的摘要：\n" + summary_result.content
+
+    summary_message = SystemMessage(content=early_summary)
+    return [summary_message] + recent_messages
+
+# =============================================
+# Test Function
+# =============================================
+
+async def run_agent():
+    print("简历助手已启动，输入'退出'结束对话")
+    print("=" * 50)
+
+    initial_state = {
+        "messages": [],
+        "resume_data": {}  # 初始化简历数据缓存
+    }
+
+    while True:
+        user_input = input("\n你：")
+        if user_input.lower() in ["退出", "quit", "exit"]:
+            print("再见！")
+            break
+
+        initial_state["messages"].append(HumanMessage(content=user_input))
+
+        if len(initial_state["messages"]) > 20:
+            print("\n🔄 上下文过长，正在压缩历史对话...")
+            initial_state["messages"] = compress_context(initial_state["messages"])
+            print("✅ 上下文压缩完成")
+
+        print("\n" + "=" * 60)
+        print("🚀 开始处理用户请求...")
+        print("=" * 60)
+
+        messages = initial_state["messages"].copy()
+        resume_data_cache = initial_state.get("resume_data", {})
+        final_response = None
+
+        async for output in graph.astream(initial_state, config={"configurable": {"thread_id": "default"}}):
+            for key, value in output.items():
+                if "messages" in value:
+                    messages = value["messages"]
+                if "resume_data" in value:
+                    resume_data_cache = value["resume_data"]
+
+        print("\n" + "=" * 60)
+        print("🎯 对话结束，输出最终结果")
+        print("=" * 60)
+
+        # 找到最后一个 AIMessage 作为最终回复
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                final_response = msg.content
+                break
+
+        if final_response:
+            print("\n💡 助手回复:")
+            print("-" * 40)
+            print(final_response)
+            print("-" * 40)
+        else:
+            print("\n⚠️ 未找到有效回复")
+
+        # 清理消息：只保留 HumanMessage 和最终的 AIMessage
+        # 这样每次新的问答都从干净状态开始，不会累积 ToolMessage
+        def cleanup_messages(messages, resume_data):
+            """清理消息：只保留 HumanMessage 和最后一个 AIMessage，同时保留 resume_data"""
+            cleaned = []
+            last_ai_msg = None
+            for msg in messages:
+                if isinstance(msg, HumanMessage):
+                    cleaned.append(msg)
+                elif isinstance(msg, AIMessage) and msg.content:
+                    last_ai_msg = msg
+            if last_ai_msg:
+                cleaned.append(last_ai_msg)
+            return cleaned, resume_data
+
+        initial_state["messages"], initial_state["resume_data"] = cleanup_messages(
+            messages, resume_data_cache
+        )
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run_agent())

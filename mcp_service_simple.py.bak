@@ -1,0 +1,378 @@
+import json
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from tools import list_directory, read_file, write_file, update_resume, load_resume
+import sys
+import os
+
+# 添加项目根目录到Python路径
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 设置WeasyPrint所需的动态库路径（macOS）
+import platform
+if platform.system() == "Darwin":
+    # 直接使用Homebrew已知路径
+    import subprocess
+    try:
+        result = subprocess.run(['brew', '--prefix', 'pango'], capture_output=True, text=True)
+        if result.returncode == 0:
+            pango_lib_path = os.path.join(result.stdout.strip(), 'lib')
+            os.environ['DYLD_LIBRARY_PATH'] = pango_lib_path
+            print(f"已设置 DYLD_LIBRARY_PATH={pango_lib_path}")
+    except Exception:
+        pass
+
+# 导入resume_agent中的graph和conversation_llm
+from resume_agent import graph, conversation_llm
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+
+# PDF生成器 - 懒加载（在API调用时才导入）
+_pdf_generator = None
+
+def _setup_weasyprint_env():
+    """设置WeasyPrint所需的macOS环境变量"""
+    import platform
+    if platform.system() == "Darwin":
+        import subprocess
+        import os
+
+        libs = ['pango', 'harfbuzz', 'cairo', 'fontconfig']
+        lib_paths = []
+
+        for lib in libs:
+            result = subprocess.run(['brew', '--prefix', lib], capture_output=True, text=True)
+            if result.returncode == 0:
+                lib_path = os.path.join(result.stdout.strip(), 'lib')
+                lib_paths.append(lib_path)
+
+        if lib_paths:
+            os.environ['DYLD_LIBRARY_PATH'] = ':'.join(lib_paths)
+            print(f"已设置 DYLD_LIBRARY_PATH={' '.join(lib_paths)}")
+
+def get_pdf_generator():
+    """懒加载PDF生成器"""
+    global _pdf_generator
+    if _pdf_generator is None:
+        # 在导入前设置环境变量
+        _setup_weasyprint_env()
+
+        from pdf_generator import generate_pdf
+        _pdf_generator = generate_pdf
+    return _pdf_generator
+
+# 对话历史存储 - 用于保存不同会话的对话历史
+conversation_history = {}
+
+# 简历数据缓存 - 用于保存不同会话的简历数据
+resume_data_cache = {}
+
+# 生成唯一会话ID的函数
+import uuid
+
+def generate_session_id():
+    return str(uuid.uuid4())
+
+# ========== LLM上下文压缩函数 ==========
+async def compress_context_with_llm(messages, max_summary_length=150):
+    """
+    使用LLM对早期对话进行语义压缩
+
+    Args:
+        messages: 对话消息列表
+        max_summary_length: 摘要最大长度（汉字数）
+
+    Returns:
+        压缩后的消息列表
+    """
+    if len(messages) <= 5:
+        return messages
+
+    # 分离早期消息和最近消息
+    early_messages = messages[:-5]  # 保留最近5条完整消息
+    recent_messages = messages[-5:]
+
+    # 构建摘要提示
+    conversation_text = ""
+    for msg in early_messages:
+        role = getattr(msg, 'role', 'unknown') if hasattr(msg, 'role') else type(msg).__name__
+        content = getattr(msg, 'content', str(msg))
+        if isinstance(content, list):
+            # 处理多模态内容（图片等）- 避免使用 .get('type') 语法防止被 f-string 解析
+            text_content = []
+            for c in content:
+                if isinstance(c, dict):
+                    type_key = 'type'
+                    if type_key in c and c[type_key] == 'text':
+                        text_content.append(c)
+            content = str(text_content)
+        conversation_text += f"【{role}】{str(content)[:300]}\n"
+
+    summary_prompt = ChatPromptTemplate.from_messages([
+        ("system", f"""你是对话摘要专家。你的任务是将以下对话压缩成一个简洁的摘要：
+
+## 要求
+1. 摘要长度：不超过{max_summary_length}个汉字
+2. 必须保留的关键信息：
+   - 用户的基本信息（姓名、期望岗位等）
+   - 用户的工作经历要点
+   - 用户的教育背景要点
+   - 已完成的简历修改内容
+   - 当前对话的上下文和目标
+
+3. 摘要格式：
+   [早期对话摘要]
+   - 用户信息：xxx
+   - 已完成：xxx
+   - 待完善：xxx
+   - 当前上下文：xxx
+"""),
+        ("human", f"以下是待压缩的早期对话：\n\n{conversation_text}")
+    ])
+
+    # 调用LLM生成摘要
+    try:
+        summary_chain = summary_prompt | conversation_llm
+        summary_result = await summary_chain.ainvoke({})
+        summary_content = summary_result.content.strip()
+
+        print(f"✅ LLM摘要生成成功: {len(summary_content)}字")
+
+        # 创建摘要消息
+        summary_message = SystemMessage(content=summary_content)
+
+        # 返回压缩后的消息列表
+        return [summary_message] + recent_messages
+
+    except Exception as e:
+        print(f"❌ LLM摘要生成失败: {e}")
+        # 如果LLM失败，回退到简单的截断策略
+        return list(messages[-10:])
+
+# 创建 FastAPI 应用
+app = FastAPI(title="Resume Assistant MCP Service", version="1.0.0")
+
+# 添加CORS中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],  # Vue前端地址
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 健康检查端点
+@app.post("/health")
+async def health_check(request: Request):
+    """健康检查"""
+    return {
+        "status": "ok",
+        "version": "1.0.0"
+    }
+
+# 简历加载端点
+@app.post("/load_resume")
+async def load_resume_endpoint(request: Request):
+    """处理简历加载请求"""
+    try:
+        result = load_resume()
+        # 确保返回JSON格式
+        if isinstance(result, dict):
+            return JSONResponse(content=result)
+        return JSONResponse(content=result)
+    except Exception as e:
+        return JSONResponse(content=f"错误: {str(e)}", status_code=500)
+
+
+# PDF导出端点
+@app.post("/export_pdf")
+async def export_pdf_endpoint(request: Request):
+    """导出PDF"""
+    try:
+        request_data = await request.json()
+        # 支持多种格式: { resume: {...}, style: {...} } 或 { resume_data: {...}, style: {...} }
+        resume_data = request_data.get('resume', request_data.get('resume_data', request_data))
+        style = request_data.get('style', {})
+
+        print(f"收到PDF导出请求: resume_data keys = {list(resume_data.keys()) if resume_data else 'None'}")
+        print(f"Style参数: {style}")
+
+        if not resume_data:
+            return JSONResponse(content="错误: 没有收到简历数据", status_code=400)
+
+        # 使用懒加载获取PDF生成器
+        generate_pdf = get_pdf_generator()
+        pdf_bytes = generate_pdf(resume_data, style)
+
+        print(f"PDF生成成功: {len(pdf_bytes)} bytes")
+
+        return StreamingResponse(
+            iter([pdf_bytes]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=resume.pdf"}
+        )
+    except Exception as e:
+        print(f"PDF导出错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content=f"错误: {str(e)}", status_code=500)
+
+
+# 聊天接口
+import asyncio
+from langchain_core.messages import AIMessage, ToolMessage
+import base64
+from fastapi import UploadFile, File, Form
+
+@app.post("/chat")
+async def chat_endpoint(message: str = Form(""), files: list[UploadFile] = File(default=[]), session_id: str = Form("")):
+    """处理聊天请求，调用resume_agent的graph，流式返回执行过程"""
+    try:
+        # 收集所有上传的文件
+        uploaded_files = files
+        
+        # 创建消息内容
+        message_content = []
+        
+        # 添加文本内容
+        if message.strip():
+            message_content.append({"type": "text", "text": message.strip()})
+        
+        # 添加文件内容（转换为base64）
+        for file in uploaded_files:
+            # 读取文件内容
+            content = await file.read()
+            
+            # 根据文件类型创建不同的内容对象
+            if file.content_type.startswith("image/"):
+                # 转换为base64
+                base64_content = base64.b64encode(content).decode("utf-8")
+                message_content.append({
+                    "type": "image_url", 
+                    "image_url": {
+                        "url": f"data:{file.content_type};base64,{base64_content}"
+                    }
+                })
+            elif file.content_type == "application/pdf":
+                # 转换为base64
+                base64_content = base64.b64encode(content).decode("utf-8")
+                message_content.append({
+                    "type": "image_url", 
+                    "image_url": {
+                        "url": f"data:{file.content_type};base64,{base64_content}"
+                    }
+                })
+        
+        # 处理会话ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 获取现有对话历史或创建新的对话历史
+        if session_id not in conversation_history:
+            conversation_history[session_id] = []
+        if session_id not in resume_data_cache:
+            resume_data_cache[session_id] = {}
+
+        # 创建当前用户消息（使用原始 message 字符串）
+        current_message = HumanMessage(content=message.strip())
+        
+        # 将当前用户消息添加到对话历史中
+        conversation_history[session_id].append(current_message)
+
+        # ========== LLM上下文压缩 ==========
+        # 当消息数量超过15条时，使用LLM压缩早期对话
+        MAX_MESSAGES = 15
+        if len(conversation_history[session_id]) > MAX_MESSAGES:
+            print(f"🔄 对话历史过长（{len(conversation_history[session_id])}条），正在使用LLM压缩...")
+            conversation_history[session_id] = await compress_context_with_llm(
+                conversation_history[session_id]
+            )
+            print(f"✅ 压缩完成，当前 {len(conversation_history[session_id])} 条消息")
+
+        # 创建初始状态，包含完整的对话历史和简历数据缓存
+        initial_state = {
+            "messages": conversation_history[session_id].copy(),
+            "resume_data": resume_data_cache.get(session_id, {})
+        }
+        
+        async def stream_response():
+            """流式生成响应"""
+            import time
+            total_start = time.time()
+
+            print(f"📊 [性能] 开始处理请求，会话ID: {session_id}")
+            graph_start = time.time()
+
+            # 使用 graph.astream 方法（更简单可靠）
+            messages_list = []
+            resume_data = {}
+            final_content = None
+
+            try:
+                async for chunk in graph.astream(initial_state, config={"configurable": {"thread_id": session_id}}):
+                    for node_name, node_output in chunk.items():
+                        if isinstance(node_output, dict):
+                            if "messages" in node_output:
+                                messages_list = node_output["messages"]
+                            if "resume_data" in node_output:
+                                resume_data = node_output.get("resume_data", {})
+                                resume_data_cache[session_id] = resume_data
+
+                    print(f"📝 chunk from {node_name}, messages count: {len(messages_list)}")
+
+                # 提取最后一条 AIMessage
+                for msg in reversed(messages_list):
+                    if hasattr(msg, "__class__") and msg.__class__.__name__ == "AIMessage":
+                        content = getattr(msg, "content", "")
+                        if content:
+                            final_content = str(content)
+                            print(f"📝 提取到内容: {len(final_content)} 字")
+                            break
+
+            except Exception as e:
+                print(f"❌ Graph 执行错误: {e}")
+                import traceback
+                traceback.print_exc()
+                final_content = f"抱歉，处理请求时出错: {str(e)}"
+
+            # 发送最终响应
+            if not final_content:
+                final_content = "抱歉，我无法理解您的请求。"
+
+            print(f"📊 [调试] final_content 长度: {len(final_content)}")
+
+            yield 'data: ' + json.dumps({
+                "type": "final",
+                "content": final_content,
+                "session_id": session_id
+            }) + '\n\n'
+
+            # 添加到历史并清理
+            conversation_history[session_id].append(AIMessage(content=final_content))
+            cleaned = []
+            last_ai = None
+            for msg in conversation_history[session_id]:
+                if isinstance(msg, HumanMessage):
+                    cleaned.append(msg)
+                elif isinstance(msg, AIMessage) and msg.content:
+                    last_ai = msg
+            if last_ai:
+                cleaned.append(last_ai)
+            conversation_history[session_id] = cleaned
+
+            print(f"📊 [性能] 请求完成，耗时: {time.time() - total_start:.2f}秒")
+            yield 'data: ' + json.dumps({"type": "end", "session_id": session_id}) + '\n\n'
+
+        return StreamingResponse(stream_response(), media_type="text/event-stream")
+        
+    except Exception as e:
+        print(f"调试: 聊天接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content=f"错误: {str(e)}", status_code=500)
+
+if __name__ == "__main__":
+    import uvicorn
+    print("启动Resume Assistant MCP服务...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
