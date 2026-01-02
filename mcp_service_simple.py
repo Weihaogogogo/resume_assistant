@@ -64,6 +64,9 @@ def get_pdf_generator():
 # 简历数据缓存 - 用于前端预览（与 LangGraph checkpointer 同步）
 resume_data_cache = {}
 
+# JD数据缓存 - 用于前端预览（与 LangGraph checkpointer 同步）
+jd_data_cache = {}
+
 
 def generate_session_id() -> str:
     """生成唯一会话 ID"""
@@ -176,6 +179,123 @@ async def load_resume_endpoint(request: Request):
         return JSONResponse(content=f"错误: {str(e)}", status_code=500)
 
 
+@app.post("/load_jd")
+async def load_jd_endpoint(request: Request):
+    """加载JD数据"""
+    try:
+        try:
+            with open('jd.json', 'r', encoding='utf-8') as f:
+                jd_data = json.load(f)
+            return JSONResponse(content=jd_data)
+        except FileNotFoundError:
+            return JSONResponse(content={})
+    except Exception as e:
+        return JSONResponse(content=f"错误: {str(e)}", status_code=500)
+
+
+@app.post("/parse_jd")
+async def parse_jd_endpoint(request: Request):
+    """
+    解析JD文本/图片为结构化JSON
+    - 输入：text 或 image(base64)
+    - 输出：结构化 JD JSON
+    - 无多轮对话，直接返回结果
+    """
+    try:
+        import re
+        request_data = await request.json()
+        jd_text = request_data.get('text', '')
+        jd_image = request_data.get('image', '')
+
+        # 调用 resume_agent.py 中的 jd_parser_llm 解析
+        from resume_agent import jd_parser_llm, JD_PARSER_PROMPT
+
+        # 构建消息
+        if jd_image:
+            # 移除 base64 前缀（如果有）
+            if jd_image.startswith('data:image'):
+                jd_image = jd_image.split(',')[1]
+
+            # 使用正确的 image_url 格式传递图片
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": "请解析这张JD图片，提取结构化信息为JSON"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{jd_image}"}}
+                ]
+            )
+        else:
+            if not jd_text.strip():
+                return JSONResponse(content={"error": "没有收到JD内容"}, status_code=400)
+            message = HumanMessage(content=f"请解析以下JD内容：\n\n{jd_text}")
+
+        # 调用 LLM 解析
+        response = await jd_parser_llm.ainvoke([
+            SystemMessage(content=JD_PARSER_PROMPT),
+            message
+        ])
+
+        # 解析 JSON
+        content = response.content.strip()
+        content = re.sub(r'^```json\s*', '', content)
+        content = re.sub(r'^```\s*', '', content)
+        content = re.sub(r'\s*```$', '', content)
+
+        try:
+            parsed_jd = json.loads(content)
+        except json.JSONDecodeError:
+            parsed_jd = {"error": "解析失败", "raw": content}
+
+        return JSONResponse(content=parsed_jd)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/save_jd")
+async def save_jd_endpoint(request: Request):
+    """
+    保存JD数据
+    - 写入 jd.json 文件
+    - 更新 checkpointer 中的 jd_data
+    - 更新 jd_data_cache
+    """
+    try:
+        request_data = await request.json()
+        jd_data = request_data.get('jd_data', {})
+        session_id = request_data.get('session_id', '')
+
+        # 1. 保存到文件
+        with open('jd.json', 'w', encoding='utf-8') as f:
+            json.dump(jd_data, f, ensure_ascii=False, indent=2)
+
+        # 2. 更新 checkpointer（如果session存在）
+        from resume_agent import graph
+        if session_id:
+            config = {"configurable": {"thread_id": session_id}}
+            try:
+                # 获取当前状态，只更新 jd_data
+                saved_state = graph.get_state(config)
+                current_jd = saved_state.values.get("jd_data", {}) if saved_state else {}
+
+                graph.update_state(
+                    config,
+                    {"jd_data": {**current_jd, **jd_data}}
+                )
+                print(f"已更新 checkpointer 中的 jd_data")
+            except Exception as e:
+                print(f"更新 checkpointer 失败: {e}")
+
+        # 3. 更新缓存
+        jd_data_cache[session_id] = jd_data
+
+        return JSONResponse(content={"success": True})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
 @app.post("/export_pdf")
 async def export_pdf_endpoint(request: Request):
     """导出 PDF"""
@@ -246,6 +366,7 @@ async def chat_endpoint(
 
         # 获取简历数据缓存
         cached_resume_data = resume_data_cache.get(session_id, None)
+        cached_jd_data = jd_data_cache.get(session_id, None)
 
         # 创建用户消息
         current_message = HumanMessage(content=message.strip())
@@ -261,12 +382,15 @@ async def chat_endpoint(
                 # 添加新消息
                 all_messages = list(historical_messages) + [current_message]
                 initial_resume_data = saved_state.values.get("resume_data", cached_resume_data)
+                initial_jd_data = saved_state.values.get("jd_data", cached_jd_data)
             else:
                 all_messages = [current_message]
                 initial_resume_data = cached_resume_data
+                initial_jd_data = cached_jd_data
         except Exception:
             all_messages = [current_message]
             initial_resume_data = cached_resume_data
+            initial_jd_data = cached_jd_data
 
         # 上下文压缩
         MAX_MESSAGES = 15
@@ -287,7 +411,8 @@ async def chat_endpoint(
         # 创建初始状态
         initial_state = {
             "messages": all_messages,
-            "resume_data": initial_resume_data
+            "resume_data": initial_resume_data,
+            "jd_data": initial_jd_data
         }
 
         async def stream_response():
@@ -371,6 +496,9 @@ async def chat_endpoint(
                             if "resume_data" in output:
                                 resume_data = output["resume_data"]
                                 resume_data_cache[session_id] = resume_data
+                            if "jd_data" in output:
+                                jd_data = output["jd_data"]
+                                jd_data_cache[session_id] = jd_data
 
                 # 提取最终内容
                 if not accumulated_content:
@@ -408,11 +536,16 @@ async def chat_endpoint(
 
             # 手动更新 checkpointer
             try:
+                # 获取最新的 resume_data 和 jd_data（从缓存或当前状态）
+                final_resume_data = resume_data if 'resume_data' in dir() and resume_data else resume_data_cache.get(session_id, {})
+                final_jd_data = jd_data if 'jd_data' in dir() and jd_data else jd_data_cache.get(session_id, {})
+
                 graph.update_state(
                     config,
                     {
                         "messages": cleaned,
-                        "resume_data": resume_data
+                        "resume_data": final_resume_data,
+                        "jd_data": final_jd_data
                     }
                 )
             except Exception as e:
@@ -427,6 +560,24 @@ async def chat_endpoint(
         import traceback
         traceback.print_exc()
         return JSONResponse(content=f"错误: {str(e)}", status_code=500)
+
+
+@app.post("/save_resume")
+async def save_resume_endpoint(request: Request):
+    """保存简历数据"""
+    try:
+        request_data = await request.json()
+        resume_data = request_data.get('resume_data', {})
+
+        # 写入 resume.json
+        with open('resume.json', 'w', encoding='utf-8') as f:
+            json.dump(resume_data, f, ensure_ascii=False, indent=2)
+
+        return JSONResponse(content={"success": True})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
 if __name__ == "__main__":

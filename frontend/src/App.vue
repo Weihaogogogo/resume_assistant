@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, watch, nextTick, computed } from 'vue'
 import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
+import RichTextEditor from './components/RichTextEditor.vue'
 
 // 聊天消息列表
 const messages = ref([])
@@ -15,6 +16,8 @@ const userInput = ref('')
 const uploadedFiles = ref([])
 // 简历数据
 const resumeData = ref(null)
+// JD数据（新增）
+const jdData = ref(null)
 // 加载状态
 const isLoading = ref(false)
 // 响应中状态（流式输出时）
@@ -35,6 +38,36 @@ const previewImageUrl = ref('')
 // 模块高亮状态
 const highlightedModule = ref('')
 
+// JD上传弹窗状态（新增）
+const isJDDialogOpen = ref(false)
+const jdInputMode = ref('input') // 'input' | 'form'
+const jdInputText = ref('')
+const jdInputImage = ref('') // base64
+const isParsingJD = ref(false) // 解析中状态
+const isSaving = ref(false) // 保存中状态
+const jdFormData = ref({}) // 解析后的表单数据
+const newSkill = ref('') // 用于添加技能标签
+
+// 简历编辑弹窗状态（新增）
+const isResumeEditDialogOpen = ref(false)
+const resumeFormData = ref({
+  basics: { name: '', gender: '', phone: '', email: '', target_position: '' },
+  education: [],
+  work_experience: [],
+  project_experience: [],
+  others: { skills: [], certificates: [], languages: [] },
+  self_evaluation: []
+})
+// 标签输入
+const newResumeSkill = ref('')
+const newResumeCert = ref('')
+const newResumeLang = ref('')
+
+// 多行文本编辑（临时存储）
+const workDetailsText = ref('')
+const projectDetailsText = ref('')
+const selfEvalText = ref('')
+
 // 移除消息数量计算属性
 
 // 初始化简历数据
@@ -49,7 +82,22 @@ onMounted(async () => {
     })
     const data = await response.json()
     resumeData.value = data
-    
+
+    // 加载JD数据（新增）
+    try {
+      const jdResponse = await fetch('http://localhost:8000/load_jd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      })
+      const jdResult = await jdResponse.json()
+      if (jdResult && Object.keys(jdResult).length > 0) {
+        jdData.value = jdResult
+      }
+    } catch (jdError) {
+      console.log('暂无岗位数据，可以上传目标岗位信息获取针对性的简历优化建议')
+    }
+
     // 添加欢迎消息
     messages.value.push({
       id: Date.now(),
@@ -421,6 +469,515 @@ function closeImagePreview() {
   previewImageUrl.value = ''
 }
 
+// ==================== JD 上传功能（新增） ====================
+
+// 打开岗位信息弹窗
+function openJDDialog() {
+  isJDDialogOpen.value = true
+  // 如果已有岗位信息，直接显示编辑表单
+  if (jdData.value && Object.keys(jdData.value).length > 0) {
+    jdInputMode.value = 'form'
+    jdFormData.value = {
+      ...jdData.value,
+      preferred_qualifications_text: arrayToCommaSeparated(jdData.value.preferred_qualifications),
+      highlights_text: arrayToCommaSeparated(jdData.value.highlights)
+    }
+  } else {
+    jdInputMode.value = 'input'
+    jdInputText.value = ''
+    jdInputImage.value = ''
+    jdFormData.value = {
+      company: '',
+      position: '',
+      department: '',
+      location: '',
+      job_type: '',
+      salary: '',
+      description: '',
+      requirements: {
+        education: '',
+        experience: '',
+        skills: [],
+        language: ''
+      },
+      preferred_qualifications: [],
+      highlights: [],
+      preferred_qualifications_text: '',
+      highlights_text: ''
+    }
+  }
+  newSkill.value = ''
+}
+
+// 退回上一步
+function backToInputMode() {
+  jdInputMode.value = 'input'
+}
+
+// 关闭JD弹窗
+function closeJDDialog() {
+  isJDDialogOpen.value = false
+}
+
+// ==================== 简历编辑功能（新增） ====================
+
+// 打开简历编辑弹窗
+function openResumeEditDialog() {
+  // 深拷贝当前简历数据
+  if (resumeData.value && Object.keys(resumeData.value).length > 0) {
+    resumeFormData.value = JSON.parse(JSON.stringify(resumeData.value))
+  } else {
+    // 使用空结构
+    resumeFormData.value = {
+      basics: { name: '', gender: '', phone: '', email: '', target_position: '' },
+      education: [],
+      work_experience: [],
+      project_experience: [],
+      others: { skills: [], certificates: [], languages: [] },
+      self_evaluation: []
+    }
+  }
+
+  // 初始化日期范围和"至今"标志
+  const initDateRange = (item) => {
+    if (!item.date_range) {
+      item.date_range = ['', '']
+    }
+    // 设置临时日期范围数组（用于 el-date-picker）
+    const start = item.date_range[0] ? item.date_range[0].replace('.', '-') : null
+    const end = item.date_range[1] && item.date_range[1] !== '至今'
+      ? item.date_range[1].replace('.', '-')
+      : null
+    item._dateRange = start && end ? [start, end] : (start ? [start, null] : null)
+    item._isPresent = item.date_range[1] === '至今'
+  }
+
+  // 为每项工作经历初始化日期
+  resumeFormData.value.work_experience.forEach(work => {
+    initDateRange(work)
+    work._detailsText = arrayToMultiline(work.details || [])
+  })
+
+  // 为每项项目经历初始化日期
+  resumeFormData.value.project_experience.forEach(proj => {
+    initDateRange(proj)
+    proj._detailsText = arrayToMultiline(proj.details || [])
+  })
+
+  // 为每项教育经历初始化日期
+  resumeFormData.value.education.forEach(edu => {
+    initDateRange(edu)
+  })
+
+  // 转换自我评价为多行文本
+  selfEvalText.value = arrayToMultiline(resumeFormData.value.self_evaluation || [])
+
+  isResumeEditDialogOpen.value = true
+}
+
+// 处理"至今"复选框变化
+function onPresentChange(item) {
+  if (item._isPresent) {
+    // 如果选中"至今"，保留开始日期，清空结束日期
+    if (item._dateRange && item._dateRange.length === 2) {
+      item._dateRange[1] = null
+    }
+  } else {
+    // 如果取消"至今"，需要恢复结束日期选择
+    if (item._dateRange && item._dateRange.length === 2) {
+      // 如果原来有结束日期，恢复它
+      if (item.date_range && item.date_range[1] && item.date_range[1] !== '至今') {
+        item._dateRange[1] = item.date_range[1].replace('.', '-')
+      } else {
+        // 没有结束日期时，设置一个默认值（当前月）
+        const now = new Date()
+        item._dateRange[1] = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      }
+    }
+  }
+}
+
+// 将日期范围转换为保存格式
+function convertDateRangeToSave(item) {
+  if (item._dateRange && item._dateRange.length === 2) {
+    const start = item._dateRange[0] ? item._dateRange[0].replace('-', '.') : ''
+    const end = item._isPresent ? '至今' : (item._dateRange[1] ? item._dateRange[1].replace('-', '.') : '')
+    item.date_range = [start, end]
+  } else if (item._dateRange && item._dateRange.length === 1) {
+    item.date_range = [item._dateRange[0].replace('-', '.'), item._isPresent ? '至今' : '']
+  } else {
+    item.date_range = ['', item._isPresent ? '至今' : '']
+  }
+  // 清理临时字段
+  delete item._dateRange
+  delete item._isPresent
+}
+
+// 关闭简历编辑弹窗
+function closeResumeEditDialog() {
+  isResumeEditDialogOpen.value = false
+}
+
+// 添加学历
+function addEducation() {
+  resumeFormData.value.education.push({
+    school_name: '',
+    major: '',
+    degree: '',
+    date_range: ['', ''],
+    school_tags: [],
+    theses: []
+  })
+}
+
+// 删除学历
+function removeEducation(index) {
+  resumeFormData.value.education.splice(index, 1)
+}
+
+// 添加学校标签
+function addSchoolTag(edu) {
+  if (edu.newSchoolTag && edu.newSchoolTag.trim()) {
+    edu.school_tags.push(edu.newSchoolTag.trim())
+    edu.newSchoolTag = ''
+  }
+}
+
+// 添加工作经历
+function addWork() {
+  resumeFormData.value.work_experience.push({
+    company_name: '',
+    job_title: '',
+    date_range: ['', ''],
+    job_type: '全职',
+    details: ['']
+  })
+}
+
+// 删除工作经历
+function removeWork(index) {
+  resumeFormData.value.work_experience.splice(index, 1)
+}
+
+// 添加工作内容
+function addWorkDetail(work) {
+  work.details.push('')
+}
+
+// 删除工作内容
+function removeWorkDetail(work, index) {
+  work.details.splice(index, 1)
+}
+
+// 添加项目经历
+function addProject() {
+  resumeFormData.value.project_experience.push({
+    project_name: '',
+    role: '',
+    date_range: ['', ''],
+    details: ['']
+  })
+}
+
+// 删除项目经历
+function removeProject(index) {
+  resumeFormData.value.project_experience.splice(index, 1)
+}
+
+// 添加项目内容
+function addProjectDetail(proj) {
+  proj.details.push('')
+}
+
+// 删除项目内容
+function removeProjectDetail(proj, index) {
+  proj.details.splice(index, 1)
+}
+
+// 标签添加方法
+function addResumeSkill() {
+  if (newResumeSkill.value.trim()) {
+    resumeFormData.value.others.skills.push(newResumeSkill.value.trim())
+    newResumeSkill.value = ''
+  }
+}
+
+function addResumeCert() {
+  if (newResumeCert.value.trim()) {
+    resumeFormData.value.others.certificates.push(newResumeCert.value.trim())
+    newResumeCert.value = ''
+  }
+}
+
+function addResumeLang() {
+  if (newResumeLang.value.trim()) {
+    resumeFormData.value.others.languages.push(newResumeLang.value.trim())
+    newResumeLang.value = ''
+  }
+}
+
+// 加载简历数据
+async function loadResume() {
+  try {
+    const response = await fetch('http://localhost:8000/load_resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    const data = await response.json()
+    resumeData.value = data
+  } catch (error) {
+    console.error('加载简历失败:', error)
+  }
+}
+
+// 辅助函数：日期格式转换 YYYY-MM -> YYYY.MM
+function formatDateForSave(dateStr) {
+  if (!dateStr) return ''
+  // 如果已经是 YYYY.MM 格式，直接返回
+  if (dateStr.includes('.')) return dateStr
+  // YYYY-MM 转换为 YYYY.MM
+  return dateStr.replace('-', '.')
+}
+
+// 将数组转换为多行文本（用于编辑）
+function arrayToMultiline(arr) {
+  if (!arr || !Array.isArray(arr)) return ''
+  return arr.filter(item => item.trim()).join('\n')
+}
+
+// 将多行文本转换为数组（用于保存）
+function multilineToArray(text) {
+  if (!text) return []
+  return text.split('\n').map(line => line.trim()).filter(line => line)
+}
+
+// 保存简历
+async function saveResume() {
+  isSaving.value = true
+  try {
+    // 复制数据进行处理
+    const dataToSave = JSON.parse(JSON.stringify(resumeFormData.value))
+
+    // 处理性别：保密 -> 空字符串
+    if (dataToSave.basics.gender === '保密') {
+      dataToSave.basics.gender = ''
+    }
+
+    // 处理日期格式：确保是 YYYY.MM 格式
+    dataToSave.education?.forEach(edu => {
+      convertDateRangeToSave(edu)
+    })
+    dataToSave.work_experience?.forEach(work => {
+      convertDateRangeToSave(work)
+      // 将多行文本转换回数组
+      if (work._detailsText !== undefined) {
+        work.details = multilineToArray(work._detailsText)
+        delete work._detailsText
+      }
+    })
+    dataToSave.project_experience?.forEach(proj => {
+      convertDateRangeToSave(proj)
+      // 将多行文本转换回数组
+      if (proj._detailsText !== undefined) {
+        proj.details = multilineToArray(proj._detailsText)
+        delete proj._detailsText
+      }
+    })
+
+    // 将自我评价多行文本转换回数组
+    dataToSave.self_evaluation = multilineToArray(selfEvalText.value)
+
+    const response = await fetch('http://localhost:8000/save_resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_data: dataToSave })
+    })
+
+    if (response.ok) {
+      closeResumeEditDialog()
+      // 刷新简历渲染
+      loadResume()
+    } else {
+      alert('保存失败，请重试')
+    }
+  } catch (error) {
+    console.error('保存简历失败:', error)
+    alert('保存失败，请重试')
+  } finally {
+    isSaving.value = false
+  }
+}
+
+// 解析岗位信息
+async function parseJD() {
+  if (!jdInputText.value.trim() && !jdInputImage.value) {
+    alert('请输入职位描述或粘贴图片')
+    return
+  }
+
+  isParsingJD.value = true
+  try {
+    const response = await fetch('http://localhost:8000/parse_jd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: jdInputText.value,
+        image: jdInputImage.value
+      })
+    })
+
+    if (!response.ok) {
+      throw new Error('识别失败')
+    }
+
+    const result = await response.json()
+
+    if (result.error) {
+      alert('识别失败: ' + result.error)
+      return
+    }
+
+    // 确保所有字段都存在
+    jdFormData.value = {
+      company: result.company || '',
+      position: result.position || '',
+      department: result.department || '',
+      location: result.location || '',
+      job_type: result.job_type || '',
+      salary: result.salary || '',
+      description: result.description || '',
+      requirements: {
+        education: result.requirements?.education || '',
+        experience: result.requirements?.experience || '',
+        skills: result.requirements?.skills || [],
+        language: result.requirements?.language || ''
+      },
+      preferred_qualifications: result.preferred_qualifications || [],
+      highlights: result.highlights || []
+    }
+
+    jdInputMode.value = 'form'
+  } catch (error) {
+    console.error('识别失败:', error)
+    alert('识别失败，请重试')
+  } finally {
+    isParsingJD.value = false
+  }
+}
+
+// 保存岗位信息
+async function saveJD() {
+  isSaving.value = true
+  try {
+    const response = await fetch('http://localhost:8000/save_jd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jd_data: jdFormData.value,
+        session_id: sessionId.value
+      })
+    })
+
+    const result = await response.json()
+
+    if (result.success) {
+      jdData.value = { ...jdFormData.value }
+      isJDDialogOpen.value = false
+    } else {
+      alert('保存失败: ' + (result.error || '未知错误'))
+    }
+  } catch (error) {
+    console.error('保存失败:', error)
+    alert('保存失败，请重试')
+  } finally {
+    isSaving.value = false
+  }
+}
+
+// 添加技能标签
+function addSkill() {
+  const skill = newSkill.value.trim()
+  if (skill && !jdFormData.value.requirements.skills.includes(skill)) {
+    jdFormData.value.requirements.skills.push(skill)
+    newSkill.value = ''
+  }
+}
+
+// 删除技能标签
+function removeSkill(index) {
+  jdFormData.value.requirements.skills.splice(index, 1)
+}
+
+// 处理图片上传
+function handleJDImageUpload(event) {
+  const file = event.target.files[0]
+  if (file) {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      jdInputImage.value = e.target.result
+    }
+    reader.readAsDataURL(file)
+  }
+}
+
+// 处理粘贴事件（支持图片粘贴）
+function handleJDPaste(event) {
+  const items = event.clipboardData?.items
+  if (!items) return
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (item.type.startsWith('image/')) {
+      event.preventDefault()
+      const file = item.getAsFile()
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        jdInputImage.value = e.target.result
+      }
+      reader.readAsDataURL(file)
+      break
+    }
+  }
+}
+
+// 辅助函数：将逗号分隔的文本转换为数组
+function parseCommaSeparated(text) {
+  if (!text) return []
+  return text.split(',').map(s => s.trim()).filter(s => s)
+}
+
+// 将数组转换为逗号分隔的文本（用于表单绑定）
+function arrayToCommaSeparated(arr) {
+  if (!arr || !Array.isArray(arr)) return ''
+  return arr.join(', ')
+}
+
+// 更新优先条件数组
+function updatePreferredQualifications() {
+  jdFormData.value.preferred_qualifications = parseCommaSeparated(jdFormData.value.preferred_qualifications_text)
+}
+
+// 更新亮点数组
+function updateHighlights() {
+  jdFormData.value.highlights = parseCommaSeparated(jdFormData.value.highlights_text)
+}
+
+// 在解析后初始化文本字段
+function initFormTexts() {
+  jdFormData.value.preferred_qualifications_text = arrayToCommaSeparated(jdFormData.value.preferred_qualifications)
+  jdFormData.value.highlights_text = arrayToCommaSeparated(jdFormData.value.highlights)
+}
+
+// 在解析成功后调用初始化
+const originalParseJD = parseJD
+parseJD = async function() {
+  await originalParseJD()
+  if (jdInputMode.value === 'form') {
+    initFormTexts()
+  }
+}
+
 // 打开全屏弹窗
 function openFullscreenDialog() {
   dialogUserInput.value = userInput.value
@@ -596,11 +1153,11 @@ watch(
           </div>
         </div>
       </div>
-      
+
       <!-- 右侧简历预览区 -->
       <div class="resume-section">
         <div class="resume-content">
-          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" />
+          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
         </div>
       </div>
     </div>
@@ -649,6 +1206,444 @@ watch(
               :disabled="!dialogUserInput.trim()"
             >
               发送 (Ctrl+Enter)
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- JD上传弹窗（新增） -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="isJDDialogOpen" class="jd-dialog-overlay">
+        <div class="jd-dialog">
+          <div class="dialog-header">
+            <h3>{{ jdInputMode === 'input' ? '上传目标岗位信息' : '编辑岗位信息' }}</h3>
+            <button class="dialog-close-btn" @click="closeJDDialog" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+
+          <!-- 输入模式 -->
+          <div v-if="jdInputMode === 'input'" class="jd-input-section">
+            <div class="input-group">
+              <label>粘贴职位描述</label>
+              <textarea
+                v-model="jdInputText"
+                @paste="handleJDPaste"
+                placeholder="粘贴招聘要求内容，支持直接粘贴图片（Ctrl+V）..."
+                rows="10"
+              ></textarea>
+            </div>
+            <div v-if="jdInputImage" class="input-group">
+              <label>已识别的图片</label>
+              <img :src="jdInputImage" class="jd-image-preview" alt="图片预览" />
+              <button class="remove-image-btn" @click="jdInputImage = ''">移除图片</button>
+            </div>
+          </div>
+
+          <!-- 表单模式 -->
+          <div v-if="jdInputMode === 'form'" class="jd-form-section">
+            <div class="form-header">
+              <button class="back-btn" @click="backToInputMode">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+                退回上一步
+              </button>
+            </div>
+
+            <!-- 基本信息（双列：3行×2列） -->
+            <h4 class="section-title">基本信息</h4>
+            <div class="form-grid">
+              <div class="field-group">
+                <label>公司名称</label>
+                <input v-model="jdFormData.company" placeholder="请输入" />
+              </div>
+              <div class="field-group">
+                <label>职位名称</label>
+                <input v-model="jdFormData.position" placeholder="请输入" />
+              </div>
+              <div class="field-group">
+                <label>部门/团队</label>
+                <input v-model="jdFormData.department" placeholder="请输入" />
+              </div>
+              <div class="field-group">
+                <label>工作地点</label>
+                <input v-model="jdFormData.location" placeholder="请输入" />
+              </div>
+              <div class="field-group">
+                <label>工作类型</label>
+                <select v-model="jdFormData.job_type">
+                  <option value="">请选择</option>
+                  <option value="全职">全职</option>
+                  <option value="实习">实习</option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label>薪资范围</label>
+                <input v-model="jdFormData.salary" placeholder="如：30k-50k" />
+              </div>
+            </div>
+
+            <!-- 职位描述（单列） -->
+            <h4 class="section-title">职位描述</h4>
+            <div class="form-grid">
+              <div class="field-group full-width">
+                <textarea v-model="jdFormData.description" rows="3" placeholder="请输入"></textarea>
+              </div>
+            </div>
+
+            <!-- 任职要求（双列） -->
+            <h4 class="section-title">任职要求</h4>
+            <div class="form-grid">
+              <div class="field-group">
+                <label>学历要求</label>
+                <input v-model="jdFormData.requirements.education" placeholder="如：本科及以上" />
+              </div>
+              <div class="field-group">
+                <label>经验要求</label>
+                <input v-model="jdFormData.requirements.experience" placeholder="如：3年以上" />
+              </div>
+              <div class="field-group">
+                <label>语言要求</label>
+                <input v-model="jdFormData.requirements.language" placeholder="如：普通话流利" />
+              </div>
+            </div>
+
+            <!-- 其他信息（单列） -->
+            <h4 class="section-title">其他信息</h4>
+            <div class="form-grid">
+              <div class="field-group full-width">
+                <label>技能要求</label>
+                <div class="tags-input">
+                  <span v-for="(skill, i) in jdFormData.requirements.skills" :key="i" class="tag">
+                    {{ skill }}
+                    <button @click="removeSkill(i)" class="tag-remove">×</button>
+                  </span>
+                  <input
+                    v-model="newSkill"
+                    @keydown.enter="addSkill"
+                    placeholder="回车添加技能"
+                    class="tag-input"
+                  />
+                </div>
+              </div>
+              <div class="field-group full-width">
+                <label>优先条件</label>
+                <textarea v-model="jdFormData.preferred_qualifications_text" rows="2" placeholder="请输入（用逗号分隔）" @blur="updatePreferredQualifications"></textarea>
+              </div>
+              <div class="field-group full-width">
+                <label>亮点/核心关键词</label>
+                <textarea v-model="jdFormData.highlights_text" rows="2" placeholder="请输入（用逗号分隔）" @blur="updateHighlights"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- 底部按钮（固定在底部，不随内容滚动） -->
+          <div class="dialog-actions">
+            <template v-if="jdInputMode === 'input'">
+              <button class="parse-btn" @click="parseJD" :disabled="!jdInputText.trim() && !jdInputImage || isParsingJD">
+                <span v-if="isParsingJD" class="spinner"></span>
+                <span>{{ isParsingJD ? '识别中...' : '智能识别' }}</span>
+              </button>
+            </template>
+            <template v-else>
+              <button class="cancel-btn" @click="closeJDDialog">取消</button>
+              <button class="save-btn" @click="saveJD" :disabled="isSaving">
+                <span v-if="isSaving" class="spinner"></span>
+                <span>{{ isSaving ? '保存中...' : '保存' }}</span>
+              </button>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 简历编辑弹窗（新增） -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="isResumeEditDialogOpen" class="resume-dialog-overlay">
+        <div class="resume-dialog">
+          <div class="dialog-header">
+            <h3>编辑简历</h3>
+            <button class="dialog-close-btn" @click="closeResumeEditDialog" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+
+          <div class="resume-form-section">
+            <!-- 基本信息 -->
+            <h4 class="section-title">基本信息</h4>
+            <div class="form-grid">
+              <div class="field-group">
+                <label>姓名</label>
+                <input v-model="resumeFormData.basics.name" placeholder="请输入" class="element-input" />
+              </div>
+              <div class="field-group">
+                <label>性别</label>
+                <el-select v-model="resumeFormData.basics.gender" placeholder="请选择" class="element-select">
+                  <el-option label="男" value="男" />
+                  <el-option label="女" value="女" />
+                  <el-option label="保密" value="保密" />
+                </el-select>
+              </div>
+              <div class="field-group">
+                <label>手机</label>
+                <input v-model="resumeFormData.basics.phone" placeholder="请输入" class="element-input" />
+              </div>
+              <div class="field-group">
+                <label>邮箱</label>
+                <input v-model="resumeFormData.basics.email" placeholder="请输入" class="element-input" />
+              </div>
+              <div class="field-group full-width">
+                <label>期望岗位</label>
+                <input v-model="resumeFormData.basics.target_position" placeholder="请输入" class="element-input" />
+              </div>
+            </div>
+
+            <!-- 教育背景 -->
+            <h4 class="section-title">教育背景</h4>
+            <div v-for="(edu, i) in resumeFormData.education" :key="i" class="array-item">
+              <div class="array-item-header">
+                <span>学历 {{ i + 1 }}</span>
+                <button @click="removeEducation(i)" class="remove-btn">删除</button>
+              </div>
+              <div class="form-grid">
+                <div class="field-group">
+                  <label>学校</label>
+                  <input v-model="edu.school_name" placeholder="请输入" />
+                </div>
+                <div class="field-group">
+                  <label>专业</label>
+                  <input v-model="edu.major" placeholder="请输入" class="element-input" />
+                </div>
+                <div class="field-group">
+                  <label>学历</label>
+                  <el-select v-model="edu.degree" placeholder="请选择" class="element-select">
+                    <el-option label="博士" value="博士" />
+                    <el-option label="硕士" value="硕士" />
+                    <el-option label="本科" value="本科" />
+                    <el-option label="大专" value="大专" />
+                    <el-option label="中专" value="中专" />
+                    <el-option label="高中" value="高中" />
+                    <el-option label="初中及以下" value="初中及以下" />
+                  </el-select>
+                </div>
+                <div class="field-group full-width">
+                  <label>时间范围</label>
+                  <div class="date-range-wrapper">
+                    <template v-if="!edu._isPresent">
+                      <el-date-picker
+                        v-model="edu._dateRange"
+                        type="monthrange"
+                        range-separator="至"
+                        start-placeholder="开始时间"
+                        end-placeholder="结束时间"
+                        format="YYYY.MM"
+                        value-format="YYYY-MM"
+                        class="element-date-picker"
+                      />
+                    </template>
+                    <template v-else>
+                      <div class="present-date-display">
+                        <span class="present-start-date">{{ edu._dateRange?.[0]?.replace('-', '.') || '' }}</span>
+                        <span class="present-separator">至</span>
+                        <span class="present-end-text">至今</span>
+                      </div>
+                    </template>
+                    <label class="present-label">
+                      <input type="checkbox" v-model="edu._isPresent" @change="onPresentChange(edu)" />
+                      至今
+                    </label>
+                  </div>
+                </div>
+                <div class="field-group full-width">
+                  <label>学校标签</label>
+                  <div class="tags-input">
+                    <span v-for="(tag, j) in edu.school_tags" :key="j" class="tag">
+                      {{ tag }}
+                      <button @click="edu.school_tags.splice(j, 1)" class="tag-remove">×</button>
+                    </span>
+                    <input v-model="edu.newSchoolTag" @keydown.enter="addSchoolTag(edu)" placeholder="回车添加标签" class="tag-input" />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <button @click="addEducation" class="add-btn">+ 添加学历</button>
+
+            <!-- 工作经历 -->
+            <h4 class="section-title">工作经历</h4>
+            <div v-for="(work, i) in resumeFormData.work_experience" :key="i" class="array-item">
+              <div class="array-item-header">
+                <span>工作 {{ i + 1 }}</span>
+                <button @click="removeWork(i)" class="remove-btn">删除</button>
+              </div>
+              <div class="form-grid">
+                <div class="field-group">
+                  <label>公司</label>
+                  <input v-model="work.company_name" placeholder="请输入" class="element-input" />
+                </div>
+                <div class="field-group">
+                  <label>职位</label>
+                  <input v-model="work.job_title" placeholder="请输入" class="element-input" />
+                </div>
+                <div class="field-group">
+                  <label>工作类型</label>
+                  <el-select v-model="work.job_type" placeholder="请选择" class="element-select">
+                    <el-option label="全职" value="全职" />
+                    <el-option label="实习" value="实习" />
+                  </el-select>
+                </div>
+                <div class="field-group full-width">
+                  <label>时间范围</label>
+                  <div class="date-range-wrapper">
+                    <template v-if="!work._isPresent">
+                      <el-date-picker
+                        v-model="work._dateRange"
+                        type="monthrange"
+                        range-separator="至"
+                        start-placeholder="开始时间"
+                        end-placeholder="结束时间"
+                        format="YYYY.MM"
+                        value-format="YYYY-MM"
+                        class="element-date-picker"
+                      />
+                    </template>
+                    <template v-else>
+                      <div class="present-date-display">
+                        <span class="present-start-date">{{ work._dateRange?.[0]?.replace('-', '.') || '' }}</span>
+                        <span class="present-separator">至</span>
+                        <span class="present-end-text">至今</span>
+                      </div>
+                    </template>
+                    <label class="present-label">
+                      <input type="checkbox" v-model="work._isPresent" @change="onPresentChange(work)" />
+                      至今
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <!-- 工作内容 -->
+              <div class="array-item-nested">
+                <label>工作内容</label>
+                <RichTextEditor
+                  v-model="work._detailsText"
+                  placeholder="请输入工作内容，支持换行和 Ctrl+B 加粗"
+                  class="rich-editor-field"
+                />
+              </div>
+            </div>
+            <button @click="addWork" class="add-btn">+ 添加工作经历</button>
+
+            <!-- 项目经历 -->
+            <h4 class="section-title">项目经历</h4>
+            <div v-for="(proj, i) in resumeFormData.project_experience" :key="i" class="array-item">
+              <div class="array-item-header">
+                <span>项目 {{ i + 1 }}</span>
+                <button @click="removeProject(i)" class="remove-btn">删除</button>
+              </div>
+              <div class="form-grid">
+                <div class="field-group">
+                  <label>项目名称</label>
+                  <input v-model="proj.project_name" placeholder="请输入" class="element-input" />
+                </div>
+                <div class="field-group">
+                  <label>角色</label>
+                  <input v-model="proj.role" placeholder="请输入" class="element-input" />
+                </div>
+                <div class="field-group full-width">
+                  <label>时间范围</label>
+                  <div class="date-range-wrapper">
+                    <template v-if="!proj._isPresent">
+                      <el-date-picker
+                        v-model="proj._dateRange"
+                        type="monthrange"
+                        range-separator="至"
+                        start-placeholder="开始时间"
+                        end-placeholder="结束时间"
+                        format="YYYY.MM"
+                        value-format="YYYY-MM"
+                        class="element-date-picker"
+                      />
+                    </template>
+                    <template v-else>
+                      <div class="present-date-display">
+                        <span class="present-start-date">{{ proj._dateRange?.[0]?.replace('-', '.') || '' }}</span>
+                        <span class="present-separator">至</span>
+                        <span class="present-end-text">至今</span>
+                      </div>
+                    </template>
+                    <label class="present-label">
+                      <input type="checkbox" v-model="proj._isPresent" @change="onPresentChange(proj)" />
+                      至今
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <!-- 项目内容 -->
+              <div class="array-item-nested">
+                <label>项目内容</label>
+                <RichTextEditor
+                  v-model="proj._detailsText"
+                  placeholder="请输入项目内容，支持换行和 Ctrl+B 加粗"
+                  class="rich-editor-field"
+                />
+              </div>
+            </div>
+            <button @click="addProject" class="add-btn">+ 添加项目经历</button>
+
+            <!-- 其他信息 -->
+            <h4 class="section-title">其他信息</h4>
+            <div class="others-section">
+              <div class="field-group full-width">
+                <label>技能</label>
+                <div class="tags-input">
+                  <span v-for="(skill, i) in resumeFormData.others.skills" :key="i" class="tag">
+                    {{ skill }}
+                    <button @click="resumeFormData.others.skills.splice(i, 1)" class="tag-remove">×</button>
+                  </span>
+                  <input v-model="newResumeSkill" @keydown.enter="addResumeSkill" placeholder="回车添加技能" class="tag-input" />
+                </div>
+              </div>
+              <div class="field-group full-width">
+                <label>证书</label>
+                <div class="tags-input">
+                  <span v-for="(cert, i) in resumeFormData.others.certificates" :key="i" class="tag">
+                    {{ cert }}
+                    <button @click="resumeFormData.others.certificates.splice(i, 1)" class="tag-remove">×</button>
+                  </span>
+                  <input v-model="newResumeCert" @keydown.enter="addResumeCert" placeholder="回车添加证书" class="tag-input" />
+                </div>
+              </div>
+              <div class="field-group full-width">
+                <label>语言</label>
+                <div class="tags-input">
+                  <span v-for="(lang, i) in resumeFormData.others.languages" :key="i" class="tag">
+                    {{ lang }}
+                    <button @click="resumeFormData.others.languages.splice(i, 1)" class="tag-remove">×</button>
+                  </span>
+                  <input v-model="newResumeLang" @keydown.enter="addResumeLang" placeholder="回车添加语言" class="tag-input" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 自我评价 -->
+            <h4 class="section-title">自我评价</h4>
+            <RichTextEditor
+              v-model="selfEvalText"
+              placeholder="请输入自我评价，支持换行和 Ctrl+B 加粗"
+              class="rich-editor-field"
+            />
+          </div>
+
+          <div class="dialog-actions">
+            <button class="cancel-btn" @click="closeResumeEditDialog">取消</button>
+            <button class="save-btn" @click="saveResume" :disabled="isSaving">
+              <span v-if="isSaving" class="spinner"></span>
+              <span>{{ isSaving ? '保存中...' : '保存' }}</span>
             </button>
           </div>
         </div>
@@ -1324,5 +2319,787 @@ watch(
 .dialog-fade-enter-from .fullscreen-dialog,
 .dialog-fade-leave-to .fullscreen-dialog {
   transform: scale(0.95);
+}
+
+/* ==================== JD上传弹窗样式（新增） ==================== */
+.jd-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.jd-dialog {
+  background-color: white;
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 600px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+}
+
+.jd-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.jd-dialog .dialog-header h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.jd-dialog .dialog-close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.jd-dialog .dialog-close-btn:hover {
+  background-color: var(--secondary-color);
+  color: var(--text-primary);
+}
+
+.jd-input-section {
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.jd-input-section .input-group {
+  margin-bottom: 1rem;
+}
+
+.jd-input-section .input-group label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.jd-input-section .input-group textarea {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.jd-input-section .input-group textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.jd-input-section .divider {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin: 1rem 0;
+  position: relative;
+}
+
+.jd-input-section .divider::before,
+.jd-input-section .divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 40%;
+  height: 1px;
+  background-color: var(--border-color);
+}
+
+.jd-input-section .divider::before {
+  left: 0;
+}
+
+.jd-input-section .divider::after {
+  right: 0;
+}
+
+.jd-input-section .image-upload-input {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+}
+
+.jd-image-preview {
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  margin-top: 0.5rem;
+  border: 1px solid var(--border-color);
+}
+
+.remove-image-btn {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.remove-image-btn:hover {
+  background: #fecaca;
+}
+
+.jd-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  background-color: #fafafa;
+  flex-shrink: 0;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.parse-btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background-color: var(--primary-color);
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.parse-btn:hover:not(:disabled) {
+  background-color: var(--primary-hover);
+}
+
+.parse-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Spinner 动效 */
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.cancel-btn {
+  padding: 0.75rem 1.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background-color: white;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cancel-btn:hover {
+  background-color: var(--secondary-color);
+  color: var(--text-primary);
+}
+
+.save-btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background-color: var(--primary-color);
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.save-btn:hover {
+  background-color: var(--primary-hover);
+}
+
+/* JD表单样式 */
+.jd-form-section {
+  padding: 1.5rem;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.form-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.back-btn:hover {
+  background: #e9ecef;
+  color: var(--text-primary);
+}
+
+/* 分组标题 */
+.section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #212529;
+  margin: 1.5rem 0 0.75rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #e9ecef;
+}
+
+/* 子项标题（学历1、工作1、项目1） */
+.array-item-header span {
+  font-size: 0.75rem;
+  color: #6c757d;
+  font-weight: 500;
+}
+
+/* 表单布局 */
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.form-grid + .form-grid {
+  margin-top: 0.5rem;
+}
+
+/* 字段容器 */
+.field-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-group.full-width {
+  grid-column: 1 / -1;
+}
+
+.field-group label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 0.2rem;
+}
+
+.field-group input,
+.field-group select,
+.field-group textarea {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-family: inherit;
+  background: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.field-group input:hover,
+.field-group select:hover,
+.field-group textarea:hover {
+  border-color: #dee2e6;
+}
+
+.field-group input:focus,
+.field-group select:focus,
+.field-group textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.field-group input::placeholder,
+.field-group textarea::placeholder {
+  color: #adb5bd;
+}
+
+.field-group textarea {
+  resize: vertical;
+  min-height: 56px;
+  line-height: 1.5;
+}
+
+.tags-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  align-items: center;
+}
+
+.tags-input.full-width {
+  grid-column: 1 / -1;
+}
+
+.tags-input .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background-color: var(--secondary-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.tags-input .tag-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+
+.tags-input .tag-remove:hover {
+  color: var(--error-color);
+}
+
+.tags-input .tag-input {
+  flex: 1;
+  min-width: 100px;
+  border: none;
+  padding: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.tags-input .tag-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* ==================== 简历编辑弹窗样式（新增） ==================== */
+.resume-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.resume-dialog {
+  background-color: white;
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+}
+
+.resume-form-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.array-item {
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.array-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.array-item-nested {
+  margin-top: 0.75rem;
+}
+
+.array-item-nested > label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.nested-item {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.nested-item input {
+  flex: 1;
+}
+
+.add-btn {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px dashed #ccc;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+}
+
+.add-btn:hover {
+  background: #f8f9fa;
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.add-nested-btn {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  border: 1px dashed #ccc;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+}
+
+.add-nested-btn:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.remove-btn {
+  color: var(--error-color);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.remove-btn:hover {
+  background: #fee2e2;
+  color: var(--error-hover);
+  border-radius: var(--radius-sm);
+}
+
+/* 日期选择器样式 */
+.date-range-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.element-date-picker {
+  flex: 1;
+}
+
+.element-date-picker :deep(.el-input__wrapper) {
+  background: #fafafa;
+  border-color: #e9ecef;
+}
+
+.element-date-picker :deep(.el-input__wrapper:hover) {
+  border-color: #dee2e6;
+}
+
+.element-date-picker :deep(.el-input__wrapper.is-focus) {
+  background: #fff;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.present-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.present-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.present-text {
+  color: var(--primary-color);
+  font-weight: 500;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.8rem;
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: var(--radius-sm);
+}
+
+.present-date-display {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #fafafa;
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-sm);
+  flex: 1;
+}
+
+.present-start-date {
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.present-separator {
+  color: #adb5bd;
+  font-size: 0.85rem;
+}
+
+.present-end-text {
+  color: var(--primary-color);
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+
+/* Element UI 组件样式 */
+.element-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-family: inherit;
+  background: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.element-input:hover {
+  border-color: #dee2e6;
+}
+
+.element-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.element-select {
+  width: 100%;
+}
+
+.element-select :deep(.el-input__wrapper) {
+  background: #fafafa;
+  border-color: #e9ecef;
+  border-radius: var(--radius-sm);
+}
+
+.element-select :deep(.el-input__wrapper:hover) {
+  border-color: #dee2e6;
+}
+
+.element-select :deep(.el-input__wrapper.is-focus) {
+  background: #fff;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.element-date-picker {
+  width: 100%;
+}
+
+.element-date-picker :deep(.el-input__wrapper) {
+  background: #fafafa;
+  border-color: #e9ecef;
+  border-radius: var(--radius-sm);
+}
+
+.element-date-picker :deep(.el-input__wrapper:hover) {
+  border-color: #dee2e6;
+}
+
+.element-date-picker :deep(.el-input__wrapper.is-focus) {
+  background: #fff;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+/* 其他信息单列布局 */
+.others-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+/* 嵌套项全宽布局 */
+.nested-item.full-width {
+  flex-direction: column;
+}
+
+.nested-item.full-width :deep(.bold-textarea) {
+  width: 100%;
+}
+
+.nested-item.full-width :deep(.content-area) {
+  min-height: 80px;
+}
+
+/* 按钮布局优化 */
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  background-color: #fafafa;
+  flex-shrink: 0;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.cancel-btn, .save-btn {
+  min-width: 80px;
+  padding: 0.6rem 1.2rem;
+}
+
+.save-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.save-btn:disabled .spinner {
+  margin-right: 0.4rem;
+}
+
+/* 字段组的 select 样式 */
+.field-group select {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-family: inherit;
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.field-group select:hover {
+  border-color: #dee2e6;
+}
+
+.field-group select:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+/* 多行文本域样式 */
+.multiline-textarea {
+  width: 100%;
+  min-height: 100px;
+  max-height: 300px;
+  padding: 0.75rem;
+  border: 1px solid #e9ecef;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-family: inherit;
+  line-height: 1.6;
+  resize: vertical;
+  background: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.multiline-textarea:hover {
+  border-color: #dee2e6;
+}
+
+.multiline-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+/* 富文本编辑器样式 */
+.rich-editor-field {
+  width: 100%;
+}
+
+.rich-editor-field :deep(.rich-editor) {
+  border: 1px solid #e9ecef;
+  background: #fafafa;
+}
+
+.rich-editor-field :deep(.rich-editor:focus-within) {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
+
+.rich-editor-field :deep(.editor-content) {
+  min-height: 100px;
+  max-height: 200px;
+  font-size: 0.85rem;
 }
 </style>
