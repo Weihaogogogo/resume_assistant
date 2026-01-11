@@ -16,6 +16,7 @@ import httpx
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from dataclasses import field
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
@@ -94,6 +95,32 @@ class Resume(BaseModel):
 
 
 # =============================================================================
+# JD (Job Description) 数据模型定义
+# =============================================================================
+
+class JDRequirements(BaseModel):
+    """JD要求"""
+    education: str = Field(default="", description="学历要求")
+    experience: str = Field(default="", description="经验要求")
+    skills: List[str] = Field(default_factory=list, description="技能要求")
+    language: str = Field(default="", description="语言要求")
+
+
+class JobDescription(BaseModel):
+    """完整JD数据结构"""
+    company: str = Field(default="", description="公司名称")
+    position: str = Field(default="", description="职位名称")
+    department: str = Field(default="", description="部门/团队")
+    location: str = Field(default="", description="工作地点")
+    job_type: str = Field(default="", description="全职/实习")
+    salary: str = Field(default="", description="薪资范围")
+    description: str = Field(default="", description="职位描述（核心职责）")
+    requirements: JDRequirements = Field(default_factory=JDRequirements, description="任职要求")
+    preferred_qualifications: List[str] = Field(default_factory=list, description="优先条件")
+    highlights: List[str] = Field(default_factory=list, description="JD亮点/核心关键词")
+
+
+# =============================================================================
 # LLM 配置
 # =============================================================================
 
@@ -122,6 +149,16 @@ formatter_llm = ChatOpenAI(
     temperature=0.0  # 格式化需要更低温度
 )
 
+# JD Parser LLM - 负责解析JD文本/图片为JSON
+jd_parser_llm = ChatOpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url=os.getenv("BASE_URL"),
+    model="gemini-3-flash-preview",
+    http_client=httpx_client,
+    max_retries=3,
+    temperature=0.0  # 解析需要低温度，保证JSON格式准确
+)
+
 
 # =============================================================================
 # Prompts - 系统提示词
@@ -144,8 +181,11 @@ CONVERSATION_PROMPT = """
    - **Result**：必须有数字或对比（如：效率提升 30%、首屏加载从 2s 降至 0.5s、获得 500+ 用户好评）。
 2. **动词精准**：优先使用“主导”、“重构”、“从0到1构建”、“优化”等高含金量动词。
 3. **去除冗余**：删掉“负责”、“参与”等虚词，直接描述动作。
+4. **关键信息加粗**：用两个星号 ** 包裹关键信息以加粗，包括量化指标（数字、百分比）、核心技术/工具、核心成就，以及标签式描述（如“技术栈：”、“职责：”等）。
 
 # 用户的简历数据：{{resume_data}}
+
+# 目标岗位JD数据：{{jd_data}}
 
 # 对话逻辑规则
 1. **引导式提问**：如果用户给出的经历太简略（如“我做过一个简历助手”），不要直接修改，要问：“这个项目很有潜力。你能细说下你当时遇到最难的技术点是什么吗？或者你用什么指标衡量它的成功？”
@@ -153,7 +193,7 @@ CONVERSATION_PROMPT = """
 3. **确认修改**：仅当用户明确表示“好”、“就按这个改”、“确认”时，调用 `signal_formatter_tool`。
 
 # 工具调用规则
-- read_file_tool: 当用户问到关于简历的问题、且当前简历数据尚未加载时调用。
+- read_file_tool: 简历数据尚未加载时立即调用。
 - signal_formatter_tool: 仅在用户确认修改意见后调用。
 
 # 禁止行为
@@ -161,25 +201,77 @@ CONVERSATION_PROMPT = """
 - 绝对禁止提及 JSON、Key、Value 等技术术语。
 - 严禁输出 JSON 代码块。
 
-# 简历模块说明（用自然语言交流）
+# 简历模块格式说明（供参考）
+**注意**：括号内标注"数组"的字段均为数组格式，如`["条目1", "条目2"]`。
 - basics: 基本信息（姓名、性别、手机、邮箱、期望岗位）
-- education: 教育背景（学校、专业、学历、时间、标签、论文）
-- work_experience: 工作经历（公司、职位、时间、类型、具体内容）
-- project_experience: 项目经历（项目名称、角色、时间、具体内容）
-- others: 其他信息（技能、证书、语言）
-- self_evaluation: 自我评价
+- education: 教育背景（学校、专业、学历、时间、标签（如985/211/双一流/强基计划等等）、论文）
+- work_experience: 工作经历（公司、职位、时间、类型、具体内容（数组））
+- project_experience: 项目经历（项目名称、角色、时间、具体内容（数组））
+- others: 其他信息（技能（数组）、证书（数组）、语言（数组））
+- self_evaluation: 自我评价（数组）
 
 请根据用户的具体问题和当前简历内容，给出专业、有针对性的回复。"""
+
+
+# JD Parser Prompt - 用于解析JD文本/图片为JSON
+JD_PARSER_PROMPT = '''# Role
+你是JD解析专家，负责将招聘描述（Job Description）解析为结构化JSON。
+
+# 任务
+将用户提供的JD文本或图片OCR内容解析为结构化数据。
+
+# 严格的输出格式
+你必须严格按照以下JSON Schema输出，直接输出JSON对象：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "company": { "type": "string", "description": "公司名称" },
+    "position": { "type": "string", "description": "职位名称" },
+    "department": { "type": "string", "description": "部门/团队" },
+    "location": { "type": "string", "description": "工作地点" },
+    "job_type": { "type": "string", "description": "全职/实习" },
+    "salary": { "type": "string", "description": "薪资范围" },
+    "description": { "type": "string", "description": "职位描述（核心职责）" },
+    "requirements": {
+      "type": "object",
+      "properties": {
+        "education": { "type": "string", "description": "学历要求" },
+        "experience": { "type": "string", "description": "经验要求" },
+        "skills": { "type": "array", "items": { "type": "string" }, "description": "技能要求" },
+        "language": { "type": "string", "description": "语言要求" }
+      }
+    },
+    "preferred_qualifications": { "type": "array", "items": { "type": "string" }, "description": "优先条件" },
+    "highlights": { "type": "array", "items": { "type": "string" }, "description": "JD亮点/核心关键词" }
+  },
+  "required": ["company", "position"]
+}
+```
+
+# 严格规则
+1. **只输出JSON**，不要有任何解释、前缀、后缀、markdown代码块标记
+2. **必须包含所有字段**，即使值为空字符串或空数组
+3. **skills、preferred_qualifications、highlights 必须是数组格式**
+4. 如果原始JD没有某字段，设置为空字符串 "" 或空数组 []
+5. 绝对不要输出 ```json 或 ``` 标记
+6. 绝对不要输出其他任何文字
+
+# 示例
+输入：字节跳动招聘高级产品经理，要求本科以上学历，3年以上经验
+输出：{"company":"字节跳动","position":"高级产品经理","department":"","location":"","job_type":"全职","salary":"","description":"","requirements":{"education":"本科以上","experience":"3年以上","skills":[],"language":""},"preferred_qualifications":[],"highlights":[]}
+'''
 
 
 FORMATTER_PROMPT = """# Role
 你是简历格式化专家，负责将用户的修改意图转化为规范的 JSON 格式，并调用 write_file 工具保存结果。
 
 # 核心规则
-1. 从下方的对话历史中，分析用户想要修改什么内容
-2. 结合当前的简历数据，只修改用户明确指定的部分
+1. 从对话历史中，分析用户想要修改什么内容
+2. 结合当前的简历数据，只修改用户明确指定的部分，允许覆盖部分原有内容
 3. 将修改内容格式化为符合 JSON schema 的格式
-4. **必须保留原有内容的完整性**，只修改用户明确指定的部分
+4. **保留原有内容的完整性**，只修改用户明确指定的部分
 5. **必须调用 write_file 工具**将 JSON 保存到 resume.json
 
 # 如何识别修改意图
@@ -306,9 +398,11 @@ class AgentState:
     Attributes:
         messages: 对话消息列表
         resume_data: 简历数据（从 resume.json 读取）
+        jd_data: 目标岗位JD数据（从 jd.json 读取）
     """
-    messages: list
+    messages: list = field(default_factory=list)
     resume_data: dict = None  # None 表示尚未读取简历
+    jd_data: dict = None  # None 表示尚未加载JD
 
 
 # =============================================================================
@@ -372,7 +466,7 @@ async def conversation_node(state: AgentState) -> dict:
     """
     last_msg = state.messages[-1] if state.messages else None
     if not last_msg:
-        return {"messages": state.messages, "resume_data": state.resume_data or {}}
+        return {"messages": state.messages, "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
 
     # 构建系统消息，使用模板替换 resume_data
     if state.resume_data:
@@ -380,6 +474,13 @@ async def conversation_node(state: AgentState) -> dict:
         system_content = CONVERSATION_PROMPT.replace("{{resume_data}}", f"\n{resume_json}\n")
     else:
         system_content = CONVERSATION_PROMPT.replace("{{resume_data}}", "\n（简历数据尚未加载）")
+
+    # 注入 jd_data
+    if state.jd_data:
+        jd_json = json.dumps(state.jd_data, ensure_ascii=False, indent=2)
+        system_content = system_content.replace("{{jd_data}}", f"\n目标岗位 JD 数据：\n{jd_json}\n")
+    else:
+        system_content = system_content.replace("{{jd_data}}", "\n（目标岗位JD数据尚未加载）")
 
     messages = [SystemMessage(content=system_content)] + list(state.messages)
 
@@ -406,7 +507,8 @@ async def conversation_node(state: AgentState) -> dict:
 
     return {
         "messages": cleaned_messages + [response],
-        "resume_data": state.resume_data or {}
+        "resume_data": state.resume_data or {},
+        "jd_data": state.jd_data or {}
     }
 
 
@@ -421,7 +523,7 @@ async def tool_node(state: AgentState) -> dict:
 
     # 检查是否有工具调用
     if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
-        return {"messages": state.messages, "resume_data": state.resume_data or {}}
+        return {"messages": state.messages, "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
 
     # 执行工具调用
     new_messages = []
@@ -481,7 +583,8 @@ async def tool_node(state: AgentState) -> dict:
 
     return {
         "messages": state.messages + new_messages,
-        "resume_data": updated_resume_data if updated_resume_data else state.resume_data
+        "resume_data": updated_resume_data if updated_resume_data else state.resume_data,
+        "jd_data": state.jd_data or {}
     }
 
 
@@ -549,7 +652,8 @@ async def formatter_node(state: AgentState) -> dict:
         "messages": state.messages + [
             AIMessage(content=formatted_content, tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else [])
         ],
-        "resume_data": state.resume_data or {}
+        "resume_data": state.resume_data or {},
+        "jd_data": state.jd_data or {}
     }
 
 

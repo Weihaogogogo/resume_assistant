@@ -370,7 +370,8 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
     .school-tags {{
         display: inline-flex;
         gap: 0.375em;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        white-space: nowrap;
     }}
 
     .school-tag {{

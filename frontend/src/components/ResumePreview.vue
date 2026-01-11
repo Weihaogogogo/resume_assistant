@@ -12,8 +12,16 @@ const props = defineProps({
     type: String,
     required: false,
     default: ''
+  },
+  // JD数据（新增）
+  jdData: {
+    type: Object,
+    required: false,
+    default: null
   }
 })
+
+const emit = defineEmits(['open-jd-dialog', 'open-resume-edit'])
 
 // ========== 样式控制变量 ==========
 const marginVertical = ref(9)
@@ -577,7 +585,33 @@ const getItemIndex = (type, dataIndex) => {
             </div>
           </div>
         </div>
-        <div class="toolbar-section">
+        <div class="toolbar-section toolbar-actions">
+          <button
+            class="jd-upload-btn"
+            @click="emit('open-resume-edit')"
+            title="编辑简历"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+            <span>编辑简历</span>
+          </button>
+          <button
+            class="jd-upload-btn"
+            @click="emit('open-jd-dialog')"
+            title="上传目标岗位信息"
+          >
+            <span v-if="!jdData" class="red-dot"></span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            <span>目标岗位</span>
+          </button>
           <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF">
             <span v-if="isExportingPDF" class="spinner"></span>
             <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
@@ -1055,6 +1089,12 @@ const getItemIndex = (type, dataIndex) => {
   margin-left: auto;
   flex-shrink: 0;
 }
+.toolbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
 .toolbar-title {
   font-size: 0.8rem;
   font-weight: 500;
@@ -1154,6 +1194,36 @@ const getItemIndex = (type, dataIndex) => {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+/* JD上传按钮 */
+.jd-upload-btn {
+  background: #fff;
+  color: #333;
+  border: 1px solid #ddd;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  position: relative;
+}
+.jd-upload-btn:hover {
+  background: #f5f5f5;
+  border-color: #ccc;
+}
+.red-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  background: #ef4444;
+  border-radius: 50%;
+  border: 2px solid white;
 }
 /* Spinner 转圈圈 */
 .spinner {
@@ -1301,7 +1371,8 @@ const getItemIndex = (type, dataIndex) => {
 .school-tags {
   display: inline-flex;
   gap: 0.375em;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .school-tag {
   display: inline-block;
