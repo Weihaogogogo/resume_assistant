@@ -4,13 +4,14 @@
 
 核心设计原则：
 1. 状态驱动：所有状态通过 AgentState 传递，使用 LangGraph checkpointer 持久化
-2. 工具调用：只在必要时调用工具（read_file, write_file）
+2. 工具调用：只在必要时调用工具（signal_formatter_tool, save_resume_tool）
 3. 消息过滤：只传递 HumanMessage/AIMessage/SystemMessage 给 LLM，跳过 ToolMessage
 4. 无硬编码回复：所有 AI 回复由 LLM 生成，不使用硬编码内容
 """
 
 import os
 import json
+import uuid
 import asyncio
 import httpx
 from dotenv import load_dotenv
@@ -24,8 +25,8 @@ from dataclasses import dataclass
 from typing import List
 from pydantic import BaseModel, Field
 
-# 导入自定义工具
-from tools import read_file, write_file
+# 全局变量：当前用户ID（由 mcp_service_simple.py 设置）
+current_user_id = None
 
 # 加载环境变量
 load_dotenv()
@@ -181,25 +182,36 @@ CONVERSATION_PROMPT = """
    - **Result**：必须有数字或对比（如：效率提升 30%、首屏加载从 2s 降至 0.5s、获得 500+ 用户好评）。
 2. **动词精准**：优先使用“主导”、“重构”、“从0到1构建”、“优化”等高含金量动词。
 3. **去除冗余**：删掉“负责”、“参与”等虚词，直接描述动作。
-4. **关键信息加粗**：用两个星号 ** 包裹关键信息以加粗，包括量化指标（数字、百分比）、核心技术/工具、核心成就，以及标签式描述（如“技术栈：”、“职责：”等）。
+4. **关键信息加粗**：**重要** - 用两个星号 ** 包裹关键信息以加粗，包括量化指标（数字、百分比）、核心技术/工具、核心成就，以及标签式描述（如“技术栈：”、“职责：”等）。
+
+# 简历质量约束（参考资深面试官标准）
+1. **穿透包装**：识别并拆穿“用过程繁琐掩盖结果平庸”的防御性描述。引导用户关注价值而非工作量（例如“写了1w字”、“调研6款产品”等过程劳务化表述应转化为具体产出）。
+2. **结果导向**：坚信没有量化结果的经历等同于“流水账”。每个经历必须包含数字或对比（如效率提升30%、用户增长500+等），否则引导用户补充。
+3. **决策挖掘**：关注用户“为什么做”而不仅仅是“做了什么”。询问决策背后的原因、选型依据、权衡考虑，体现思考深度。
+4. **避免黑话**：禁止使用“赋能、闭环、沉淀、颗粒度”等空洞话术。引导用户用具体、直白的语言描述实际贡献。
+5. **负面惩罚意识**：如果用户提供的内容存在“过程劳务化”、“话术空心化”、“缺乏决策痕迹”，应指出并引导改进，而非直接采用。
 
 # 用户的简历数据：{{resume_data}}
 
 # 目标岗位JD数据：{{jd_data}}
 
 # 对话逻辑规则
-1. **引导式提问**：如果用户给出的经历太简略（如“我做过一个简历助手”），不要直接修改，要问：“这个项目很有潜力。你能细说下你当时遇到最难的技术点是什么吗？或者你用什么指标衡量它的成功？”
-2. **即时反馈**：当用户给出补充后，给出一个对比示例：“你看，把‘做简历助手’改成‘基于大模型构建 STAR 法则映射引擎，提升用户简历诊断效率 40%’，是不是瞬间就有大厂感了？”
-3. **确认修改**：仅当用户明确表示“好”、“就按这个改”、“确认”时，调用 `signal_formatter_tool`。
+1. **引导式提问**：如果用户给出的经历太简略（如"我做过一个简历助手"），不要直接修改，要问："这个项目很有潜力。你能细说下你当时遇到最难的技术点是什么吗？或者你用什么指标衡量它的成功？"
+2. **即时反馈**：当用户给出补充后，给出一个对比示例："你看，把'做简历助手'改成'基于大模型构建 STAR 法则映射引擎，提升用户简历诊断效率 40%'，是不是瞬间就有大厂感了？"
+3. **确认修改**：仅当用户明确表示"好"、"就按这个改"、"确认"时，调用 `signal_formatter_tool`。
 
-# 工具调用规则
-- read_file_tool: 简历数据尚未加载时立即调用。
-- signal_formatter_tool: 仅在用户确认修改意见后调用。
+# 工具调用规则（当完成修改后，不需要调用工具）
+- ask_confirmation: **重要** - 当你给出了完整的优化建议、可以达到修改标准时，**必须**调用此工具，该工具仅用于显示确定按钮按钮让用户便捷点击。
+- signal_formatter_tool: 在用户确认修改意见后调用。
+
+# 重要规则
+- **重要** 当 just_saved=True（简历刚保存）时，说明简历已经修改完成了，不要调用 signal_formatter_tool 或 ask_confirmation。
 
 # 禁止行为
-- 绝对禁止说：“已保存”、“已修改”、“正在为你更新”。
+- **重要** 绝对禁止输出 JSON 代码块。
+- **重要** 严禁输出JSON格式内容。
+- 绝对禁止说："已保存"、"已修改"、"正在为你更新"。
 - 绝对禁止提及 JSON、Key、Value 等技术术语。
-- 严禁输出 JSON 代码块。
 
 # 简历模块格式说明（供参考）
 **注意**：括号内标注"数组"的字段均为数组格式，如`["条目1", "条目2"]`。
@@ -265,14 +277,14 @@ JD_PARSER_PROMPT = '''# Role
 
 
 FORMATTER_PROMPT = """# Role
-你是简历格式化专家，负责将用户的修改意图转化为规范的 JSON 格式，并调用 write_file 工具保存结果。
+你是简历格式化专家，负责将用户的修改意图转化为规范的 JSON 格式，并调用 save_resume 工具保存结果。
 
 # 核心规则
 1. 从对话历史中，分析用户想要修改什么内容
 2. 结合当前的简历数据，只修改用户明确指定的部分，允许覆盖部分原有内容
 3. 将修改内容格式化为符合 JSON schema 的格式
 4. **保留原有内容的完整性**，只修改用户明确指定的部分
-5. **必须调用 write_file 工具**将 JSON 保存到 resume.json
+5. **必须调用 save_resume 工具**将 JSON 保存到数据库
 
 # 如何识别修改意图
 - 用户说"把xxx改成yyy"、"修改xxx为yyy"、"xxx换成yyy"等 → 明确修改指令
@@ -323,6 +335,7 @@ FORMATTER_PROMPT = """# Role
 
 # 内容编辑自由度
 - **允许**：将长字符串拆分为数组（如 details 数组）
+- **允许（重要）**：用两个星号 ** 包裹关键信息以加粗，包括量化指标（数字、百分比）、核心技术/工具、核心成就，以及标签式描述（如“技术栈：”、“职责：”等）。
 - **允许（谨慎）**：仅在用户表述明显不完整、模糊或遗漏关键信息时，才进行小幅优化
 - **允许**：补充缺失的元数据（如 date_range）
 - **禁止**：修改用户未指定的字段
@@ -330,7 +343,7 @@ FORMATTER_PROMPT = """# Role
 - **禁止**：大段重写用户的原始表述
 
 # 输出要求
-1. 直接调用 write_file 工具，传入格式化后的完整 JSON
+1. 直接调用 save_resume 工具，传入格式化后的完整 JSON
 2. 不要输出任何解释性文字
 """
 
@@ -340,21 +353,20 @@ FORMATTER_PROMPT = """# Role
 # =============================================================================
 
 @tool
-def read_file_tool(file_path: str = "resume.json") -> str:
-    """读取简历文件内容"""
-    return read_file(file_path=file_path)
-
-
-@tool
-def write_file_tool(file_path: str = "resume.json", content: str = "") -> str:
+def save_resume_tool(content: str = "", user_id: int = None) -> str:
     """
-    写入 JSON 内容到文件
+    将格式化后的简历数据保存到数据库
 
     Args:
-        file_path: 文件路径
-        content: JSON 格式的内容
+        content: JSON 格式的简历数据
+        user_id: 用户ID（从状态中传递）
     """
     import re
+    from tools import update_resume
+
+    # 检查是否有用户ID
+    if user_id is None:
+        return "错误：无法确定用户身份，请确保已登录"
 
     # 清理 markdown 代码块标记
     content = re.sub(r'```json\s*', '', content)
@@ -367,23 +379,58 @@ def write_file_tool(file_path: str = "resume.json", content: str = "") -> str:
         if match:
             content = match.group()
 
-    # 保存文件
-    write_file(file_path=file_path, content=content)
-    return "简历已成功保存到 resume.json"
+    # 解析并保存到数据库
+    try:
+        resume_data = json.loads(content)
+        result = update_resume(resume_data, user_id=user_id)
+        return result
+    except json.JSONDecodeError as e:
+        return f"保存失败：JSON 格式错误"
 
 
 @tool
 def signal_formatter_tool() -> str:
-    """当用户明确同意修改简历时，必须调用此工具。
-     此工具不执行任何实际操作，只是发送路由信号。
-     示例场景：用户说"好的"、"可以"、"确认"、"开始吧"等同意修改时。
+    """发送路由信号，让系统准备格式化简历数据。
+     当用户同意修改简历时调用此工具。
+     返回路由信号，不执行实际保存操作。
      """
     return "路由信号：准备转向 formatter_llm"
 
 
-# 工具列表
-conversation_tools = [read_file_tool, signal_formatter_tool]
-formatter_tools = [write_file_tool]
+@tool
+def ask_confirmation(content: str = "", options: list = None) -> str:
+    """
+    当你给出明确的修改建议后，调用此工具显示确认按钮。
+
+    Args:
+        content: 确认提示文字，如 "确认保存此修改吗？"
+        options: 选项列表，不传则使用默认的 [确认, 取消]
+    """
+    import json
+    import uuid
+
+    # 默认选项
+    default_options = [
+        {"label": "确认", "value": "confirm", "style": "primary"},
+        {"label": "取消", "value": "cancel", "style": "default"}
+    ]
+
+    options = options or default_options
+
+    # 返回结构化标记，后端解析
+    marker = {
+        "type": "ask_confirmation",
+        "content": content or "确认执行此操作？",
+        "options": options,
+        "confirm_id": str(uuid.uuid4())[:8]
+    }
+
+    return f"[CONFIRM_MARKER:{json.dumps(marker)}]"
+
+
+# 工具列表 - conversation_llm 只能调用信号工具和确认工具，不能直接保存
+conversation_tools = [signal_formatter_tool, ask_confirmation]
+formatter_tools = [save_resume_tool]
 
 
 # =============================================================================
@@ -399,37 +446,43 @@ class AgentState:
         messages: 对话消息列表
         resume_data: 简历数据（从 resume.json 读取）
         jd_data: 目标岗位JD数据（从 jd.json 读取）
+        pending_confirmation: 待确认状态（用于显示确认按钮）
+        just_saved: 标记刚保存了简历，用于引导 LLM 不再调用工具
+        user_id: 当前用户ID，用于数据隔离
     """
     messages: list = field(default_factory=list)
     resume_data: dict = None  # None 表示尚未读取简历
     jd_data: dict = None  # None 表示尚未加载JD
+    pending_confirmation: dict = None  # 待确认状态
+    just_saved: bool = False  # 刚保存简历后设置为 True
+    user_id: int = None  # 当前用户ID
 
 
 # =============================================================================
-# 工具函数
+# DEBUG: 添加诊断日志
 # =============================================================================
 
-def parse_resume_from_tool_message(content: str) -> dict:
-    """
-    从 ToolMessage 内容中解析简历数据
-
-    Args:
-        content: ToolMessage 的 content 字符串
-
-    Returns:
-        解析后的简历字典
-    """
-    try:
-        # 移除 "文件 xxx 的内容：" 前缀
-        if "的内容：" in content:
-            content = content.split("的内容：", 1)[1].strip()
-
-        # 尝试解析为 JSON
-        resume_data = json.loads(content)
-        return resume_data
-    except json.JSONDecodeError:
-        return {}
-
+def debug_print_state(state: AgentState, location: str = ""):
+    """打印当前状态用于调试"""
+    import sys
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"[DEBUG@{location}]", file=sys.stderr)
+    print(f"  messages count: {len(state.messages)}", file=sys.stderr)
+    print(f"  resume_data keys: {list((state.resume_data or {}).keys()) if state.resume_data else None}", file=sys.stderr)
+    print(f"  jd_data loaded: {bool(state.jd_data)}", file=sys.stderr)
+    print(f"  pending_confirmation: {bool(state.pending_confirmation)}", file=sys.stderr)
+    
+    # 打印最后几条消息
+    if state.messages:
+        print(f"  last 3 messages:", file=sys.stderr)
+        for i, msg in enumerate(state.messages[-3:]):
+            msg_type = type(msg).__name__
+            content = getattr(msg, 'content', '') or ''
+            content_str = str(content)[:80] if content else ''
+            print(f"    [{len(state.messages)-3+i}] {msg_type}: {content_str}...", file=sys.stderr)
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                print(f"       tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in msg.tool_calls]}", file=sys.stderr)
+    print(f"{'='*60}\n", file=sys.stderr)
 
 def extract_user_intent(state: AgentState) -> str:
     """
@@ -450,6 +503,9 @@ def extract_user_intent(state: AgentState) -> str:
             conversation_history.append(f"用户: {msg.content}")
         elif isinstance(msg, AIMessage):
             conversation_history.append(f"助手: {msg.content}")
+        elif isinstance(msg, ToolMessage):
+            tool_name = getattr(msg, 'name', 'unknown')
+            conversation_history.append(f"[工具 {tool_name}]: {msg.content}")
 
     return "\n".join(conversation_history)
 
@@ -464,9 +520,21 @@ async def conversation_node(state: AgentState) -> dict:
 
     处理用户对话，根据情况决定是否需要读取文件或转向 formatter
     """
+    debug_print_state(state, "conversation_node_ENTER")
+    
+    print(f"\n=== [Node] conversation_llm ===")
+    print(f"Input: {len(state.messages)} messages")
+    for i, msg in enumerate(state.messages):
+        content = getattr(msg, 'content', '')
+        content_str = str(content)[:50] if content else ''
+        msg_type = type(msg).__name__
+        has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
+        print(f"  [{i}] {msg_type}: {content_str}... (tool_calls: {bool(has_tool_calls)})")
+
     last_msg = state.messages[-1] if state.messages else None
     if not last_msg:
-        return {"messages": state.messages, "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
+        print("=== [End] conversation_llm (no messages) ===\n")
+        return {"messages": state.messages, "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}, "user_id": state.user_id}
 
     # 构建系统消息，使用模板替换 resume_data
     if state.resume_data:
@@ -482,7 +550,26 @@ async def conversation_node(state: AgentState) -> dict:
     else:
         system_content = system_content.replace("{{jd_data}}", "\n（目标岗位JD数据尚未加载）")
 
-    messages = [SystemMessage(content=system_content)] + list(state.messages)
+    # 过滤掉 ToolMessage，只保留 HumanMessage 和 AIMessage 传给 LLM
+    # ToolMessage 是工具执行的结果，不应该传给 LLM
+    # 注意：如果 AIMessage 带有 tool_calls（但工具还没执行），需要清空 tool_calls
+    llm_messages = []
+    for msg in state.messages:
+        if isinstance(msg, ToolMessage):
+            continue  # 跳过 ToolMessage
+        elif isinstance(msg, AIMessage) and msg.tool_calls:
+            # 如果 AIMessage 有 tool_calls，清空它们（工具会在 tool_node 中执行）
+            llm_messages.append(AIMessage(content=msg.content, tool_calls=[]))
+        else:
+            llm_messages.append(msg)
+
+    # 消息已由 save_state_async 在超过 20 条时压缩，这里使用过滤后的消息
+    messages = [SystemMessage(content=system_content)] + llm_messages
+    
+    # 如果刚保存了简历，添加一条 HumanMessage 提醒 LLM
+    if getattr(state, 'just_saved', False):
+        messages.append(HumanMessage(content="[系统提示：简历已成功保存到数据库，请不要调用任何工具，直接回复用户]"))
+        print("[Debug] 已添加 just_saved 提示给 LLM")
 
     # 调用 LLM
     try:
@@ -490,6 +577,7 @@ async def conversation_node(state: AgentState) -> dict:
             conversation_tools,
             tool_choice="auto"
         )
+        # 不要添加 stop 序列，否则可能导致工具名称被截断
         async with asyncio.timeout(60.0):
             response = await conversation_llm_with_tools.ainvoke(messages)
     except asyncio.TimeoutError:
@@ -497,37 +585,84 @@ async def conversation_node(state: AgentState) -> dict:
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败: {str(e)}")
 
+    # 打印 LLM 输出
+    print("LLM Output:")
+    print(f"  content: {repr(response.content)[:200]}")
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"  tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in response.tool_calls]}")
+    print("=== [End] conversation_llm ===\n")
+
     # 如果原始消息中有带 tool_calls 的 AIMessage，清除它们
     cleaned_messages = []
+    seen_contents = set()  # 用于去重
     for msg in state.messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            cleaned_messages.append(AIMessage(content=msg.content, tool_calls=[]))
-        else:
-            cleaned_messages.append(msg)
+        content = getattr(msg, 'content', None)
+        # 跳过 list 类型的内容（不可哈希）
+        if isinstance(content, list):
+            content = str(content)
+        msg_key = (content, type(msg).__name__)
+        if msg_key[0] and msg_key[0] not in seen_contents:
+            seen_contents.add(msg_key[0])
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                cleaned_messages.append(AIMessage(content=msg.content, tool_calls=[]))
+            else:
+                cleaned_messages.append(msg)
 
-    return {
-        "messages": cleaned_messages + [response],
+    # 返回所有消息：原始消息 + 新响应（这样上下文才能累积）
+    all_messages = list(state.messages) + [response]
+    output_state = {
+        "messages": all_messages,
         "resume_data": state.resume_data or {},
-        "jd_data": state.jd_data or {}
+        "jd_data": state.jd_data or {},
+        "just_saved": False,  # 清除 just_saved 标记
+        "user_id": state.user_id  # 保留用户ID
     }
+    
+    # 创建临时状态对象用于调试
+    class DebugState:
+        def __init__(self, d):
+            self.messages = d.get("messages", [])
+            self.resume_data = d.get("resume_data")
+            self.jd_data = d.get("jd_data")
+            self.pending_confirmation = None
+    
+    debug_print_state(DebugState(output_state), "conversation_node_EXIT")
+    
+    return output_state
 
 
 async def tool_node(state: AgentState) -> dict:
     """
     工具执行节点
 
-    执行 LLM 调用的工具（read_file_tool 或 write_file_tool）
-    执行 read_file_tool 后会更新 resume_data
+    执行 LLM 调用的工具（如 save_resume_tool）
     """
+    debug_print_state(state, "tool_node_ENTER")
+    
+    print(f"\n=== [Node] tool_node ===")
     last_message = state.messages[-1]
 
     # 检查是否有工具调用
     if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
-        return {"messages": state.messages, "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
+        print("=== [End] tool_node (no tool_calls) ===\n")
+        # 没有工具调用时，返回原始消息（保持上下文）
+        return {"messages": list(state.messages), "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
+
+    # 打印工具调用信息
+    print(f"Tool calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in last_message.tool_calls]}")
 
     # 执行工具调用
     new_messages = []
-    updated_resume_data = state.resume_data
+    updated_resume_data = None  # 用于保存从工具参数中提取的简历数据
+    pending_confirmation = None  # 用于触发确认按钮
+
+    # 先检查是否有 ask_confirmation（如果有一次确认，就跳过其他保存操作）
+    has_ask_confirmation = False
+    for tc in last_message.tool_calls:
+        tc_name = getattr(tc, 'name', '') or tc.get('name', '') if hasattr(tc, 'get') else ''
+        if tc_name == 'ask_confirmation':
+            has_ask_confirmation = True
+            break
 
     for tool_call in last_message.tool_calls:
         # 兼容不同版本的 tool_call 格式
@@ -538,6 +673,10 @@ async def tool_node(state: AgentState) -> dict:
             tool_name = tool_call['name']
         else:
             continue  # 无效的工具调用，跳过
+
+        # 如果有 ask_confirmation，跳过 save_resume_tool（由 ask_confirmation 的 pending_data 保存）
+        if has_ask_confirmation and tool_name == 'save_resume_tool':
+            continue
 
         if hasattr(tool_call, 'args'):
             tool_args = tool_call.args
@@ -555,14 +694,37 @@ async def tool_node(state: AgentState) -> dict:
 
         if not tool_func:
             result = f"错误: 工具 {tool_name} 不存在"
+            print(f"[Tool] 工具 {tool_name} 调用失败: 工具不存在")
         else:
             try:
+                # 如果是保存简历工具，从参数中提取简历数据用于更新状态，并传递 user_id
+                if tool_name == 'save_resume_tool':
+                    content = tool_args.get('content', '')
+                    try:
+                        updated_resume_data = json.loads(content)
+                    except json.JSONDecodeError:
+                        pass
+                    # 传递 user_id 以确保数据隔离
+                    tool_args['user_id'] = state.user_id
+
                 result = tool_func.invoke(tool_args)
-                # 如果是 read_file_tool，解析并更新 resume_data
-                if tool_name == 'read_file_tool':
-                    parsed_data = parse_resume_from_tool_message(result)
-                    if parsed_data:
-                        updated_resume_data = parsed_data
+
+                # 检测 ask_confirmation 工具返回值，解析确认标记
+                if tool_name == 'ask_confirmation':
+                    import re
+                    marker_match = re.search(r'\[CONFIRM_MARKER:(.+)\]', result)
+                    if marker_match:
+                        marker = json.loads(marker_match.group(1))
+                        # pending_confirmation 只用于让前端渲染 confirm area
+                        pending_confirmation = {
+                            "confirm_id": marker["confirm_id"],
+                            "content": marker["content"],
+                            "options": marker["options"]
+                        }
+
+                        # 替换显示内容，不显示原始标记
+                        result = f"等待确认：{marker['content']}"
+
             except Exception as e:
                 result = f"错误: {str(e)}"
 
@@ -573,7 +735,8 @@ async def tool_node(state: AgentState) -> dict:
         elif isinstance(tool_call, dict) and 'id' in tool_call:
             tool_call_id = tool_call['id']
         else:
-            tool_call_id = ''
+            # 生成唯一的 tool_call_id，确保 LangChain 能正确关联
+            tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
         tool_message = ToolMessage(
             content=result,
             tool_call_id=tool_call_id,
@@ -581,10 +744,26 @@ async def tool_node(state: AgentState) -> dict:
         )
         new_messages.append(tool_message)
 
+    # 打印工具结果
+    print(f"Tool results: {[m.content for m in new_messages]}")
+    print("=== [End] tool_node ===\n")
+
+    # 返回所有消息：原始消息 + 新消息（这样 router 才能找到 AIMessage 的 tool_calls）
+    all_messages = list(state.messages) + new_messages
+    
+    # 检查是否执行了 save_resume_tool
+    saved_resume = any(
+        (isinstance(m, ToolMessage) and '简历已成功保存' in m.content) 
+        for m in new_messages
+    )
+    
     return {
-        "messages": state.messages + new_messages,
-        "resume_data": updated_resume_data if updated_resume_data else state.resume_data,
-        "jd_data": state.jd_data or {}
+        "messages": all_messages,
+        "resume_data": updated_resume_data if updated_resume_data else (state.resume_data or {}),
+        "jd_data": state.jd_data or {},
+        "pending_confirmation": pending_confirmation,  # 触发后端发送 confirm
+        "just_saved": saved_resume,  # 标记刚保存了简历
+        "user_id": state.user_id  # 保留用户ID
     }
 
 
@@ -592,8 +771,19 @@ async def formatter_node(state: AgentState) -> dict:
     """
     Formatter LLM 节点
 
-    将用户的修改意图格式化为 JSON，并调用 write_file 保存
+    将用户的修改意图格式化为 JSON，并调用 save_resume 保存
     """
+    debug_print_state(state, "formatter_node_ENTER")
+    
+    print(f"\n=== [Node] formatter_llm ===")
+    print(f"Input: resume_data keys={list((state.resume_data or {}).keys())}")
+
+    # 检查是否用户点击了确认
+    last_message = state.messages[-1] if state.messages else None
+    user_content = getattr(last_message, 'content', '') or ''
+    is_confirm = '[CONFIRM_REPLY:' in user_content
+    print(f"Trigger: {'confirm click' if is_confirm else 'modify request'}")
+
     # 提取用户修改意图
     user_modification = extract_user_intent(state)
     resume_data_str = json.dumps(state.resume_data or {}, ensure_ascii=False, indent=2)
@@ -601,9 +791,34 @@ async def formatter_node(state: AgentState) -> dict:
     # 构建消息
     formatter_prompt = FORMATTER_PROMPT.replace("{{resume_data}}", f"\n{resume_data_str}\n")
 
-    messages = [
-        SystemMessage(content=formatter_prompt),
-        HumanMessage(content=f"""请分析以下对话历史，理解用户的修改意图，并格式化为 JSON：
+    if is_confirm:
+        # 用户点击确认，从对话历史中提取之前 AI 输出的修改建议
+        # 找到最近的一条包含修改建议的 AIMessage
+        previous_modification = ""
+        for msg in reversed(state.messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                # 跳过空的 AIMessage 或确认相关的消息
+                if '[CONFIRM_REPLY:' not in msg.content and msg.content.strip():
+                    previous_modification = msg.content
+                    break
+
+        messages = [
+            SystemMessage(content=formatter_prompt),
+            HumanMessage(content=f"""用户已确认保存之前的修改建议。请将以下修改建议格式化为规范的 JSON 格式，并调用 save_resume 工具保存。
+
+=== 之前生成的修改建议 ===
+{previous_modification}
+
+=== 当前简历数据 ===
+{resume_data_str}
+
+请直接将修改建议格式化为 JSON 并调用 save_resume 工具保存。""")
+        ]
+    else:
+        # 普通修改请求，从对话历史中提取修改意图
+        messages = [
+            SystemMessage(content=formatter_prompt),
+            HumanMessage(content=f"""请分析以下对话历史，理解用户的修改意图，并格式化为 JSON：
 
 === 对话历史 ===
 {user_modification}
@@ -611,8 +826,8 @@ async def formatter_node(state: AgentState) -> dict:
 === 当前简历数据 ===
 {resume_data_str}
 
-请分析用户的修改需求，直接调用 write_file 工具保存更新后的简历。""")
-    ]
+请分析用户的修改需求，直接调用 save_resume 工具保存更新后的简历。""")
+        ]
 
     # 调用 formatter LLM
     formatter_llm_with_tools = formatter_llm.bind_tools(
@@ -648,12 +863,24 @@ async def formatter_node(state: AgentState) -> dict:
     except Exception:
         formatted_content = "{}"
 
+    # 打印 LLM 输出
+    print("LLM Output:")
+    print(f"  content: {formatted_content[:200]}")
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print(f"  tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in response.tool_calls]}")
+    print("=== [End] formatter_llm ===\n")
+
+    new_messages = [
+        AIMessage(content=formatted_content, tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else [])
+    ]
+
+    # 返回所有消息：原始消息 + 新消息（这样后续节点才能访问完整的上下文）
+    all_messages = list(state.messages) + new_messages
     return {
-        "messages": state.messages + [
-            AIMessage(content=formatted_content, tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else [])
-        ],
+        "messages": all_messages,
         "resume_data": state.resume_data or {},
-        "jd_data": state.jd_data or {}
+        "jd_data": state.jd_data or {},
+        "user_id": state.user_id  # 保留用户ID
     }
 
 
@@ -666,53 +893,32 @@ def route_after_conversation(state: AgentState) -> str:
     conversation_llm 后的路由决策
 
     Returns:
-        'formatter_llm': 需要格式化写入
-        'tool_node': 需要执行工具
+        'formatter_llm': 需要格式化简历
+        'tool_node': 直接保存简历
         END: 对话结束
     """
+    if not state.messages:
+        return END
+
     last_message = state.messages[-1]
-    content = str(getattr(last_message, 'content', ''))
+    user_content = getattr(last_message, 'content', '') or ''
 
-    # 1. 检查是否有工具调用
-    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-        # 检查是否是 formatter_llm 路由信号（signal_formatter_tool 调用）
-        for tool_call in last_message.tool_calls:
-            # 兼容不同版本的 tool_call 格式
-            if hasattr(tool_call, 'name'):
-                func_name = tool_call.name
-            elif isinstance(tool_call, dict):
-                # 新版本格式: {'name': 'xxx', 'args': {...}}
-                func_name = tool_call.get('name', '')
-                if not func_name:
-                    # 旧版本格式: {'function': {'name': 'xxx', 'arguments': {...}}}
-                    func_name = tool_call.get('function', {}).get('name', '')
-            else:
-                func_name = ''
-            if func_name == 'signal_formatter_tool':
-                return "formatter_llm"
-        # 普通工具调用 → tool_node
-        return "tool_node"
-
-    # 2. 如果最后一条是 ToolMessage（工具刚执行完）
-    if isinstance(last_message, ToolMessage):
-        # 检查是否是重复的工具调用（避免无限循环）
-        if len(state.messages) >= 2:
-            prev_message = state.messages[-2]
-            if isinstance(prev_message, ToolMessage) and prev_message.name == last_message.name:
-                return END
-        # 根据工具返回内容判断下一步：
-        # - "的内容：" -> read_file 结果，需要继续对话
-        # - "已成功保存" -> write_file 结果，直接结束
-        if '已成功保存' in content:
-            return END
-        return "conversation_llm"
-
-    # 3. 兼容旧逻辑：检查是否需要转向 formatter_llm（用户确认修改）
-    if "[转向 formatter_llm]" in content:
+    # 如果是确认按钮点击，直接路由到 formatter_llm
+    if '[CONFIRM_REPLY:' in user_content:
         return "formatter_llm"
 
-    # 4. 无工具调用 → 结束对话
-    return END
+    # 检查是否有工具调用
+    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+        for tool_call in last_message.tool_calls:
+            tool_name = getattr(tool_call, 'name', '') or tool_call.get('name', '')
+            if tool_name == 'signal_formatter_tool':
+                return "formatter_llm"
+            elif tool_name == 'save_resume_tool':
+                return "tool_node"
+            elif tool_name == 'ask_confirmation':
+                return "tool_node"
+
+    return END  # 无工具调用，结束对话
 
 
 def route_after_formatter(state: AgentState) -> str:
@@ -720,16 +926,16 @@ def route_after_formatter(state: AgentState) -> str:
     formatter_llm 后的路由决策
 
     Returns:
-        'tool_node': 需要执行 write_file
+        'tool_node': 需要执行 save_resume
         'conversation_llm': 写入完成，继续对话
     """
     last_message = state.messages[-1]
 
-    # 有工具调用 → tool_node（write_file）
+    # 有工具调用 → tool_node（save_resume）
     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
         return "tool_node"
 
-    # 无工具调用 → conversation_llm
+    # 无工具调用 → conversation_llm（返回确认）
     return "conversation_llm"
 
 
@@ -739,25 +945,51 @@ def route_after_formatter(state: AgentState) -> str:
 
 graph_builder = StateGraph(AgentState)
 
-# 添加节点
+# 添加节点（只有三个节点）
 graph_builder.add_node("conversation_llm", conversation_node)
 graph_builder.add_node("formatter_llm", formatter_node)
 graph_builder.add_node("tool_node", tool_node)
 
-# 设置入口点
-graph_builder.set_entry_point("conversation_llm")
-
-# conversation_llm → formatter_llm / tool_node / conversation_llm / END
+# conversation_llm → formatter_llm / tool_node / END
+# 从 START 流入，去向：END / formatter_llm / tool_node
 graph_builder.add_conditional_edges(
     "conversation_llm",
     route_after_conversation,
     {
         "formatter_llm": "formatter_llm",
         "tool_node": "tool_node",
-        "conversation_llm": "conversation_llm",
         END: END
     }
 )
+
+
+# =============================================================================
+# 入口路由函数
+# =============================================================================
+
+def entry_router(state: AgentState) -> str:
+    """
+    START 节点的路由决策
+
+    Returns:
+        'conversation_llm': 普通对话
+        'formatter_llm': 确认按钮点击
+    """
+    if not state.messages:
+        return "conversation_llm"
+
+    # 检查最后一条消息是否是确认按钮点击
+    last_message = state.messages[-1]
+    user_content = getattr(last_message, 'content', '') or ''
+
+    if '[CONFIRM_REPLY:' in user_content:
+        return "formatter_llm"
+
+    return "conversation_llm"
+
+
+# 设置入口点的条件路由
+graph_builder.set_conditional_entry_point(entry_router)
 
 # formatter_llm → tool_node / conversation_llm
 graph_builder.add_conditional_edges(
@@ -769,14 +1001,69 @@ graph_builder.add_conditional_edges(
     }
 )
 
-# tool_node → conversation_llm（工具执行完后返回结果）
-graph_builder.add_edge("tool_node", "conversation_llm")
+# tool_node → conversation_llm / formatter_llm / END
+# 根据工具调用类型决定下一个节点
+def tool_node_router(state: AgentState) -> str:
+    # 获取最后一条 ToolMessage（这是刚执行完的工具）
+    last_msg = state.messages[-1] if state.messages else None
+    
+    if not last_msg:
+        print("[Router] tool_node_router: no messages, return END")
+        return END
+    
+    # 如果是 ToolMessage，从 tool_call_id 找到对应的 AIMessage
+    if isinstance(last_msg, ToolMessage):
+        print(f"[Router] tool_node_router: last_msg is ToolMessage, tool_call_id={last_msg.tool_call_id}")
+        print(f"[Router] state.messages count: {len(state.messages)}")
+        
+        # 在消息历史中找到对应的 AIMessage（包含 tool_calls）
+        for i, msg in enumerate(reversed(state.messages[:-1])):
+            msg_idx = len(state.messages) - 2 - i
+            print(f"[Router] checking msg[{msg_idx}]: {type(msg).__name__}")
+            print(f"[Router]   content: {str(getattr(msg, 'content', ''))[:50]}...")
+            if isinstance(msg, AIMessage):
+                tool_calls = getattr(msg, 'tool_calls', [])
+                print(f"[Router]   has tool_calls: {bool(tool_calls)}, count: {len(tool_calls)}")
+                if tool_calls:
+                    for tc in tool_calls:
+                        tc_id = getattr(tc, 'id', None) or tc.get('id', '')
+                        tc_name = getattr(tc, 'name', '') or tc.get('name', '')
+                        print(f"[Router]   tc: name={tc_name}, id={tc_id}")
+                        if tc_id == last_msg.tool_call_id:
+                            print(f"[Router] MATCH! tool_name={tc_name}")
+                            if tc_name == 'save_resume_tool':
+                                return "conversation_llm"
+                            elif tc_name == 'signal_formatter_tool':
+                                return "formatter_llm"
+                # 继续检查其他消息，直到找到匹配
+                continue
+    
+    # 检查是否有待确认状态（ask_confirmation）
+    pending = getattr(state, "pending_confirmation", None)
+    if pending:
+        print("[Router] pending_confirmation exists, return END")
+        return END  # 有待确认，返回 END
+
+    print("[Router] default -> END")
+    return END  # 默认结束
+
+graph_builder.add_conditional_edges(
+    "tool_node",
+    tool_node_router,
+    {
+        "conversation_llm": "conversation_llm",
+        "formatter_llm": "formatter_llm",
+        END: END
+    }
+)
 
 # 编译图（带 checkpointer 用于状态持久化）
-memory = MemorySaver()
-graph = graph_builder.compile(checkpointer=memory)
+# 使用 MemorySaver（内存存储）
+from langgraph.checkpoint.memory import MemorySaver
 
+checkpointer = MemorySaver()
 
+graph = graph_builder.compile(checkpointer=checkpointer)
 # =============================================================================
 # 测试函数
 # =============================================================================
@@ -811,7 +1098,7 @@ async def run_agent():
 
         # 如果有错误，直接显示错误消息
         if error_message:
-            print("\n💡 助手回复:")
+            print("\n[助手回复]")
             print("-" * 40)
             print(error_message)
             print("-" * 40)
@@ -828,7 +1115,7 @@ async def run_agent():
                             final_response = msg.content
                             break
 
-        print("\n💡 助手回复:")
+        print("\n[助手回复]")
         print("-" * 40)
         print(final_response or "未找到回复")
         print("-" * 40)

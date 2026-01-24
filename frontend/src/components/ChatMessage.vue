@@ -2,6 +2,23 @@
 import { marked } from 'marked'
 import { ref, computed } from 'vue'
 
+// 配置 marked 使用 GitHub Flavored Markdown (gfm)
+marked.use({
+  gfm: true,
+  breaks: true
+})
+
+// 预处理函数：将 **text** 替换为 <b>text</b>
+// 确保加粗语法被正确渲染
+const preprocessMarkdown = (text) => {
+  if (typeof text !== 'string') return text
+  // 递归替换嵌套的 **text**
+  while (text.includes('**')) {
+    text = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+  }
+  return text
+}
+
 // 接收消息属性
 const props = defineProps({
   message: {
@@ -13,7 +30,11 @@ const props = defineProps({
 
 // 使用 computed 追踪内容变化，实现响应式渲染
 const renderedContent = computed(() => {
-  return marked(props.message.content || '')
+  const content = props.message.content || ''
+  // 预处理加粗语法
+  const preprocessed = preprocessMarkdown(content)
+  // 使用 marked 解析
+  return marked.parse(preprocessed)
 })
 
 // 附件弹窗控制
@@ -52,29 +73,49 @@ const closePreview = () => {
   showPreview.value = false
   previewUrl.value = ''
 }
+
+// 确认按钮事件
+const emit = defineEmits(['optionClick'])
+
+const handleOptionClick = (option) => {
+  emit('optionClick', {
+    confirm_id: props.message.confirm_id,
+    value: option.value
+  })
+}
 </script>
 
 <template>
   <!-- 只有当消息有实际内容时才渲染气泡框 -->
+  <!-- 对于 confirm 类型，只渲染 confirm area，不渲染消息内容 -->
   <div
-    v-if="(props.message.role === 'user' && props.message.role !== '') || (props.message.content.trim() !== '')"
+    v-if="(props.message.role === 'user' && props.message.role !== '') || (props.message.content.trim() !== '') || (props.message.type === 'confirm' && props.message.confirm_id)"
     class="chat-message"
     :class="{
       'chat-message--user': props.message.role === 'user' && props.message.role !== '',
-      'chat-message--assistant': !(props.message.role === 'user' && props.message.role !== '')
+      'chat-message--assistant': props.message.role === 'assistant' || props.message.role === '',
+      'chat-message--confirm': props.message.type === 'confirm'
     }"
   >
-    <!-- 助手头像 - 仅在助手消息中显示 -->
-    <div v-if="!(props.message.role === 'user' && props.message.role !== '')" class="chat-message__avatar chat-message__avatar--assistant">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 11.5a2.5 2.5 0 0 0-2.5-2.5H11"></path>
-        <circle cx="12" cy="12" r="9"></circle>
-        <path d="M9 12l2 2 4-4"></path>
-      </svg>
+    <!-- 确认按钮区域（独立渲染，不在消息气泡内） -->
+    <!-- 只有当消息未被处理过时才显示 -->
+    <div v-if="props.message.type === 'confirm' && props.message.confirm_id && !props.message.handled" class="confirm-area">
+      <p class="confirm-content">{{ props.message.content }}</p>
+      <div class="confirm-buttons">
+        <button
+          v-for="option in props.message.options"
+          :key="option.value"
+          :class="['confirm-btn', `confirm-btn--${option.style}`]"
+          @click="handleOptionClick(option)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
     </div>
 
-    <!-- 消息内容 -->
+    <!-- 消息内容 - 无头像（confirm 类型不显示） -->
     <div
+      v-if="props.message.type !== 'confirm'"
       class="chat-message__content"
       :class="{
         'chat-message__content--user': props.message.role === 'user' && props.message.role !== '',
@@ -83,14 +124,6 @@ const closePreview = () => {
     >
       <!-- 渲染消息内容 -->
       <div v-html="renderedContent"></div>
-    </div>
-
-    <!-- 用户头像 - 仅在用户消息中显示 -->
-    <div v-if="props.message.role === 'user' && props.message.role !== ''" class="chat-message__avatar chat-message__avatar--user">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-        <circle cx="12" cy="7" r="4"></circle>
-      </svg>
     </div>
   </div>
 
@@ -161,88 +194,65 @@ const closePreview = () => {
 /* 基础消息样式 */
 .chat-message {
   display: flex;
-  gap: 12px;
   margin-bottom: 12px;
   align-items: flex-start;
 }
 
-/* 用户消息样式 */
+/* 用户消息样式 - 右对齐 */
 .chat-message--user {
   justify-content: flex-end;
 }
 
-/* 助手消息样式 */
+/* 助手消息样式 - 左对齐 */
 .chat-message--assistant {
   justify-content: flex-start;
 }
 
-/* 头像基础样式 */
-.chat-message__avatar {
-  width: 35px;
-  height: 35px;
-  border-radius: 50%;
-  background-color: #f1f3f4;
-  display: flex;
-  align-items: center;
+/* 确认消息样式 - 居中 */
+.chat-message--confirm {
   justify-content: center;
-  flex-shrink: 0;
-  font-size: 18px;
-}
-
-/* 助手头像 */
-.chat-message__avatar--assistant {
-  order: 1;
-  background-color: #e0f2fe;
-  color: #0369a1;
-}
-
-/* 用户头像 */
-.chat-message__avatar--user {
-  order: 3;
-  background-color: #dbeafe;
-  color: #2563eb;
 }
 
 /* 消息内容基础样式 */
 .chat-message__content {
-  line-height: 1.5;
+  line-height: 2.2;  /* 继续增大行高 */
+  padding: 6px 0;
 }
 
-/* 用户消息内容 - 灰黑色底色，进一步缩窄边距，移除阴影 */
+/* 用户消息内容 */
 .chat-message__content--user {
-  order: 2;
-  background-color: #333333;
+  background-color: #1a1a1a;
   color: white;
-  padding: 4px 12px;
-  border-radius: 18px 4px 18px 18px;
-  box-shadow: none;
+  padding: 0px 16px;  /* 减小内边距，让气泡更紧凑 */
+  border-radius: 24px;  /* 四角等倒圆角 */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   max-width: 75%;
-  line-height: 1.4;
+  line-height: 1.7;
+  margin: 8px 0;
 }
 
 /* 用户消息中的链接样式 */
 .chat-message__content--user a {
-  color: #81c784;
+  color: #f0c14b;
   text-decoration: underline;
   font-weight: normal;
 }
 
 /* 确保链接在悬停时也清晰可见 */
 .chat-message__content--user a:hover {
-  color: #a5d6a7;
+  color: #f4d03f;
   text-decoration: underline;
 }
 
-/* 助手消息内容 - 移除气泡框 */
+/* 助手消息内容 - 简洁样式 */
 .chat-message__content--assistant {
-  order: 2;
   background-color: transparent;
-  color: #1f2937;
-  padding: 0;
+  color: #1a1a1a;
+  padding: 8px 0;
   border-radius: 0;
   box-shadow: none;
-  border-left: none;
   max-width: 100%;
+  line-height: 1.8;
 }
 
 /* ========== 附件样式 ========== */
@@ -253,16 +263,16 @@ const closePreview = () => {
   margin-top: 0;
 }
 
-/* 用户消息的附件左对齐 */
+/* 用户消息的附件右对齐 */
 .chat-message--user + .chat-attachments {
   justify-content: flex-end;
-  padding-right: 47px; /* 用户头像宽度 + gap */
+  padding-right: 0;
 }
 
 /* 助手消息的附件左对齐 */
 .chat-message--assistant + .chat-attachments {
   justify-content: flex-start;
-  padding-left: 47px; /* 助手头像宽度 + gap */
+  padding-left: 0;
 }
 
 .chat-attachment {
@@ -426,7 +436,8 @@ const closePreview = () => {
   margin: 0.25em 0;
 }
 
-.chat-message__content strong {
+.chat-message__content strong,
+.chat-message__content b {
   font-weight: 600;
 }
 
@@ -450,5 +461,109 @@ const closePreview = () => {
   background-color: transparent;
   padding: 0;
   border-radius: 0;
+}
+
+/* 确认区域 - 像素风简洁样式 */
+.confirm-area {
+  margin-top: 16px;
+  padding: 20px 28px;
+  background-color: #fafafa;
+  border-radius: 12px;
+  border: 2px solid #e8e8e8;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  display: inline-block;
+  min-width: 300px;
+}
+
+.confirm-content {
+  margin: 0 0 20px 0;
+  color: #1a1a1a;
+  font-size: 15px;
+  font-weight: 500;
+  text-align: center;
+}
+
+/* 按钮组 */
+.confirm-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+}
+
+/* 按钮样式 - 像素风简洁风格 */
+.confirm-btn {
+  padding: 12px 32px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 2px solid #1a1a1a;
+  background-color: white;
+  color: #1a1a1a;
+  font-family: inherit;
+  box-shadow: 2px 2px 0 #1a1a1a; /* 像素风阴影 */
+}
+
+.confirm-btn:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 #1a1a1a;
+}
+
+.confirm-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 #1a1a1a;
+}
+
+.confirm-btn:focus,
+.confirm-btn:focus-visible {
+  outline: none;
+  border-color: #d97706;
+  box-shadow: 2px 2px 0 #d97706;
+}
+
+.confirm-btn--primary {
+  background-color: #1a1a1a;
+  border-color: #1a1a1a;
+  color: white;
+  box-shadow: 2px 2px 0 #1a1a1a;
+}
+
+.confirm-btn--primary:hover {
+  background-color: #333333;
+  border-color: #333333;
+  color: white;
+  box-shadow: 4px 4px 0 #1a1a1a;
+}
+
+.confirm-btn--primary:active {
+  background-color: #1a1a1a;
+  box-shadow: 1px 1px 0 #1a1a1a;
+}
+
+.confirm-btn--default {
+  background-color: white;
+  border-color: #1a1a1a;
+  color: #1a1a1a;
+}
+
+.confirm-btn--default:hover {
+  background-color: #f5f5f5;
+  border-color: #1a1a1a;
+  color: #1a1a1a;
+}
+
+.confirm-btn--danger {
+  background-color: #fff;
+  border-color: #dc3545;
+  color: #dc3545;
+  box-shadow: 2px 2px 0 #dc3545;
+}
+
+.confirm-btn--danger:hover {
+  background-color: #fff0f0;
+  border-color: #dc3545;
+  color: #dc3545;
+  box-shadow: 4px 4px 0 #dc3545;
 }
 </style>

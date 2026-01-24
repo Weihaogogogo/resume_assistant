@@ -61,7 +61,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
         html_parts.append('</div>')
 
     # 教育经历
-    if resume_data.get("education"):
+    if resume_data.get("education") and len(resume_data["education"]) > 0:
         html_parts.append('<section class="section">')
         html_parts.append('<h2 class="section-title">教育经历</h2>')
 
@@ -118,7 +118,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
         html_parts.append('</section>')
 
     # 工作经历
-    if resume_data.get("work_experience"):
+    if resume_data.get("work_experience") and len(resume_data["work_experience"]) > 0:
         html_parts.append('<section class="section">')
         html_parts.append('<h2 class="section-title">工作经历</h2>')
 
@@ -160,7 +160,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
         html_parts.append('</section>')
 
     # 项目经历
-    if resume_data.get("project_experience"):
+    if resume_data.get("project_experience") and len(resume_data["project_experience"]) > 0:
         html_parts.append('<section class="section">')
         html_parts.append('<h2 class="section-title">项目经历</h2>')
 
@@ -243,7 +243,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
             html_parts.append('</section>')
 
     # 自我评价
-    if resume_data.get("self_evaluation"):
+    if resume_data.get("self_evaluation") and len(resume_data["self_evaluation"]) > 0:
         html_parts.append('<section class="section self-evaluation">')
         html_parts.append('<h2 class="section-title">自我评价</h2>')
         for eval_item in resume_data["self_evaluation"]:

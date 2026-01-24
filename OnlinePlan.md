@@ -89,12 +89,12 @@ data/
 
 ## 四、数据库设计 (SQLite)
 
-### 4.1 SQLAlchemy 模型
+### 4.1 数据模型
 
 ```python
 # database.py
 
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, JSON, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -108,6 +108,7 @@ Base = declarative_base()
 
 
 class User(Base):
+    """用户表"""
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(100), unique=True, index=True, nullable=False)
@@ -118,10 +119,45 @@ class User(Base):
 
 
 class InviteCode(Base):
+    """邀请码表"""
     __tablename__ = "invite_codes"
     code = Column(String(50), primary_key=True)
     is_used = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Resume(Base):
+    """简历数据表"""
+    __tablename__ = "resumes"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    name = Column(String(100), default="默认简历")
+    resume_data = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class JobDescription(Base):
+    """JD数据表"""
+    __tablename__ = "job_descriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    company = Column(String(100), default="")
+    position = Column(String(100), default="")
+    jd_data = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Conversation(Base):
+    """对话历史表"""
+    __tablename__ = "conversations"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(36), nullable=False)
+    messages = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 def get_db():
@@ -134,6 +170,19 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+```
+
+### 4.2 数据存储目录
+
+```
+data/
+  deepagents.db          # SQLite（User, InviteCode, Resume, JD, Conversation）
+  users/                 # JSON 文件备份（可选）
+    {user_id}/
+      resume.json        # 简历备份
+      jd.json            # JD备份
+      conversations/     # 对话备份
+        {session_id}.json
 ```
 
 ---
@@ -201,12 +250,31 @@ async def get_current_user(
 
 ### 5.2 认证接口
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/auth/register` | POST | 邮箱+密码+邀请码注册 |
-| `/auth/login` | POST | 登录返回 JWT Token |
-| `/auth/me` | GET | 获取当前用户信息 |
-| `/auth/invite-codes` | POST | 生成邀请码（管理员） |
+| 端点 | 方法 | 说明 | 需要认证 |
+|------|------|------|----------|
+| `/auth/register` | POST | 邮箱+密码+邀请码注册 | ❌ |
+| `/auth/login` | POST | 登录返回 JWT Token | ❌ |
+| `/auth/me` | GET | 获取当前用户信息 | ✅ |
+| `/auth/invite-codes` | POST | 生成邀请码（管理员） | ✅ |
+
+### 5.3 需要改造的业务接口
+
+| 端点 | 当前行为 | 改造后行为 | 需要认证 |
+|------|----------|----------|----------|
+| `/load_resume` | 读 `resume.json` | 从 SQLite 读取用户简历 | ✅ |
+| `/save_resume` | 写 `resume.json` | 写入 SQLite 用户简历 | ✅ |
+| `/load_jd` | 读 `jd.json` | 从 SQLite 读取用户JD | ✅ |
+| `/save_jd` | 写 `jd.json` | 写入 SQLite 用户JD | ✅ |
+| `/parse_jd` | 解析JD（无用户关联） | 解析后存入用户JD | ✅ |
+| `/chat` | 无用户认证 | JWT认证 + 用户数据隔离 | ✅ |
+| `/export_pdf` | 直接接收resume_data | 从用户SQLite读取 | ✅ |
+
+### 5.4 需要移除的全局状态
+
+| 变量 | 问题 | 改造方案 |
+|------|------|----------|
+| `resume_data_cache` | 单用户内存缓存 | 移除，改用 SQLite |
+| `jd_data_cache` | 单用户内存缓存 | 移除，改用 SQLite |
 
 ---
 
@@ -252,7 +320,7 @@ save_conversation_history(user_id, session_id, new_messages)
 
 | 文件 | 说明 |
 |------|------|
-| `database.py` | SQLite 连接和 SQLAlchemy 模型 |
+| `database.py` | SQLite 连接和 5 个 SQLAlchemy 模型（User, InviteCode, Resume, JobDescription, Conversation） |
 | `auth.py` | JWT 工具函数、密码加密 |
 | `Dockerfile` | Docker 镜像构建 |
 | `docker-compose.yml` | Docker 服务编排 |
@@ -263,9 +331,36 @@ save_conversation_history(user_id, session_id, new_messages)
 
 | 文件 | 改造内容 |
 |------|----------|
-| `mcp_service_simple.py` | 新增认证端点、用户关联逻辑、聊天历史持久化 |
+| `tools.py` | read_file/write_file/update_resume/load_resume 改为数据库操作 |
+| `resume_agent.py` | 工具函数逻辑改造、MemorySaver 改为 SQLite Checkpointer |
+| `mcp_service_simple.py` | 全部 API 端点添加认证、全局缓存移除、数据读写改 SQLite |
 | `frontend/src/App.vue` | 添加 token 状态、请求拦截器、认证守卫 |
 | `.env` | 新增 JWT_SECRET_KEY、DATABASE_URL |
+
+### 7.3 需要移除的代码
+
+| 位置 | 代码 | 原因 |
+|------|------|------|
+| `mcp_service_simple.py:65-68` | `resume_data_cache`, `jd_data_cache` | 单用户内存缓存，改为 SQLite |
+| `mcp_service_simple.py:169-179` | `/load_resume` 读文件 | 改为读 SQLite |
+| `mcp_service_simple.py:182-193` | `/load_jd` 读文件 | 改为读 SQLite |
+| `mcp_service_simple.py:255-296` | `/save_jd` 写文件+checkpoint | 改为写 SQLite |
+| `mcp_service_simple.py:565-580` | `/save_resume` 写文件 | 改为写 SQLite |
+
+### 7.4 API 端点改造清单
+
+| 端点 | 改造内容 |
+|------|----------|
+| `/auth/register` | **新建**（邮箱+密码+邀请码） |
+| `/auth/login` | **新建**（返回 JWT） |
+| `/auth/me` | **新建**（获取用户信息） |
+| `/load_resume` | 添加认证，从 SQLite 读取 |
+| `/save_resume` | 添加认证，写入 SQLite |
+| `/load_jd` | 添加认证，从 SQLite 读取 |
+| `/save_jd` | 添加认证，写入 SQLite |
+| `/parse_jd` | 添加认证，解析后存入用户JD |
+| `/chat` | 添加认证，用户数据隔离 |
+| `/export_pdf` | 添加认证，从用户 SQLite 读取 |
 
 ---
 
@@ -275,7 +370,7 @@ save_conversation_history(user_id, session_id, new_messages)
 
 **新建 `database.py`：**
 - SQLite 连接配置
-- User、InviteCode 模型
+- User、InviteCode、Resume、JobDescription、Conversation 模型
 - get_db 依赖函数
 - init_db 初始化函数
 
@@ -284,7 +379,182 @@ save_conversation_history(user_id, session_id, new_messages)
 - JWT Token 创建/验证
 - get_current_user 依赖
 
-### Phase 2：改造后端 API
+**新增数据访问函数：**
+```python
+# database.py 或新建 storage.py
+
+def get_user_resume(user_id: int, db: Session) -> dict:
+    """获取用户简历"""
+    resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+    return resume.resume_data if resume else {}
+
+def save_user_resume(user_id: int, data: dict, db: Session):
+    """保存用户简历"""
+    resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+    if resume:
+        resume.resume_data = data
+    else:
+        resume = Resume(user_id=user_id, resume_data=data, name="默认简历")
+        db.add(resume)
+    db.commit()
+
+def get_user_jd(user_id: int, db: Session) -> dict:
+    """获取用户JD"""
+    jd = db.query(JobDescription).filter(JobDescription.user_id == user_id).first()
+    return jd.jd_data if jd else {}
+
+def save_user_jd(user_id: int, data: dict, db: Session):
+    """保存用户JD"""
+    jd = db.query(JobDescription).filter(JobDescription.user_id == user_id).first()
+    if jd:
+        jd.jd_data = data
+    else:
+        jd = JobDescription(user_id=user_id, jd_data=data)
+        db.add(jd)
+    db.commit()
+
+def save_conversation(user_id: int, session_id: str, messages: list, db: Session):
+    """保存对话历史"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if conv:
+        conv.messages = messages
+    else:
+        conv = Conversation(user_id=user_id, session_id=session_id, messages=messages)
+        db.add(conv)
+    db.commit()
+```
+
+### Phase 2：改造 tools.py（数据访问层）
+
+**改造 `tools.py` - 所有文件操作改为数据库操作：**
+
+| 函数 | 改造前 | 改造后 |
+|------|--------|--------|
+| `read_file()` | 直接读文件 | **移除或标记废弃**（不再使用） |
+| `write_file()` | 直接写文件 | **移除或标记废弃**（不再使用） |
+| `update_resume()` | 写 `resume.json` | 写入 SQLite 的 `resumes` 表 |
+| `load_resume()` | 读 `resume.json` | 从 SQLite 的 `resumes` 表读取 |
+
+**核心改造：**
+```python
+# tools.py
+
+def update_resume(data: dict) -> str:
+    """更新用户简历到 SQLite"""
+    from database import get_db, Resume
+    db = next(get_db())
+    try:
+        resume = db.query(Resume).filter(Resume.user_id == current_user_id).first()
+        if resume:
+            resume.resume_data = data
+        else:
+            resume = Resume(user_id=current_user_id, resume_data=data, name="默认简历")
+            db.add(resume)
+        db.commit()
+        return "简历已成功保存"
+    except Exception as e:
+        return f"保存失败：{str(e)}"
+    finally:
+        db.close()
+
+def load_resume() -> dict:
+    """从 SQLite 加载用户简历"""
+    from database import get_db, Resume
+    db = next(get_db())
+    try:
+        resume = db.query(Resume).filter(Resume.user_id == current_user_id).first()
+        return resume.resume_data if resume else {}
+    except Exception as e:
+        return {"error": f"加载失败：{str(e)}"}
+    finally:
+        db.close()
+```
+
+### Phase 3：改造 resume_agent.py
+
+**3.1 工具函数改造：**
+
+| 位置 | 改造前 | 改造后 | 原因 |
+|------|--------|--------|------|
+| 第342-345行 | `read_file_tool` 调用 `read_file()` | **不再调用文件函数**，优先使用 `state.resume_data`，如无数据返回提示 | 多用户下无法确定文件路径 |
+| 第348-372行 | `write_file_tool` 调用 `write_file()` | 改为调用新的 `update_resume()` 写入 SQLite | 数据持久化到数据库 |
+| 第776-777行 | `MemorySaver()` | `SqliteSaver.from_conn_string(DATABASE_URL)` | 对话状态持久化 |
+
+**3.2 read_file_tool 改造示例：**
+```python
+@tool
+def read_file_tool(file_path: str = "resume.json") -> str:
+    """
+    读取简历数据
+
+    注意：此工具不再直接读取文件。简历数据应从 state.resume_data 获取。
+    如果 state.resume_data 为空，说明尚未加载简历。
+    """
+    # 直接返回提示，数据应从 state 获取
+    return "简历数据需要从当前会话状态中获取。如需重新加载，请联系系统支持。"
+```
+
+**3.3 write_file_tool 改造示例：**
+```python
+@tool
+def write_file_tool(file_path: str = "resume.json", content: str = "") -> str:
+    """
+    写入 JSON 内容到用户简历
+
+    Args:
+        file_path: 文件路径（忽略，实际写入数据库）
+        content: JSON 格式的内容
+    """
+    import re
+    from tools import update_resume
+
+    # 清理 markdown 代码块标记
+    content = re.sub(r'```json\s*', '', content)
+    content = re.sub(r'```\s*', '', content)
+    content = content.strip()
+
+    # 提取 JSON 对象
+    if not content.startswith('{'):
+        match = re.search(r'\{[\s\S]*\}', content)
+        if match:
+            content = match.group()
+
+    # 解析并保存到数据库
+    try:
+        resume_data = json.loads(content)
+        result = update_resume(resume_data)
+        return result
+    except json.JSONDecodeError:
+        return "保存失败：JSON 格式错误"
+```
+
+**3.4 工具列表更新：**
+```python
+# 改造后 - 工具不再依赖文件操作
+conversation_tools = [read_file_tool, signal_formatter_tool]
+formatter_tools = [write_file_tool]
+```
+
+**3.5 Checkpointer 改造：**
+```python
+# 改造前
+from langgraph.checkpoint.memory import MemorySaver
+memory = MemorySaver()
+graph = graph_builder.compile(checkpointer=memory)
+
+# 改造后
+import os
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/deepagents.db")
+checkpointer = SqliteSaver.from_conn_string(DATABASE_URL)
+graph = graph_builder.compile(checkpointer=checkpointer)
+```
+
+### Phase 4：改造后端 API
 
 **改造 `mcp_service_simple.py`：**
 
@@ -294,15 +564,34 @@ save_conversation_history(user_id, session_id, new_messages)
    - `GET /auth/me` - 获取用户信息
 
 2. 改造现有端点：
-   - `/chat` - 添加认证依赖，加载/保存对话历史
-   - `/load_resume` - 从用户目录加载
-   - `/save_resume` - 保存到用户目录
+   - `/chat` - 添加认证依赖，从 SQLite 加载 resume_data/jd_data 放入 state
+   - `/load_resume` - 从 SQLite 的 resumes 表读取
+   - `/save_resume` - 写入 SQLite 的 resumes 表
 
 3. 新增对话历史接口：
    - `GET /conversations` - 获取用户对话列表
    - `GET /conversations/{session_id}` - 获取单条对话
 
-### Phase 3：前端改造
+4. **数据加载逻辑：**
+```python
+# /chat 接口调用 graph 前
+user = get_current_user(token, db)
+resume_data = load_resume_from_db(user.id, db)
+jd_data = load_jd_from_db(user.id, db)
+
+# 放入初始 state
+initial_state = {
+    "messages": [HumanMessage(content=user_message)],
+    "resume_data": resume_data or {},
+    "jd_data": jd_data or {}
+}
+
+# graph 执行后保存
+if final_resume_data:
+    save_resume_to_db(user.id, final_resume_data, db)
+```
+
+### Phase 5：前端改造
 
 **新建 `frontend/src/views/Login.vue`：**
 - 登录表单（邮箱+密码）
@@ -318,7 +607,7 @@ save_conversation_history(user_id, session_id, new_messages)
 - 添加请求拦截器（Authorization Header）
 - 未登录时跳转到登录页
 
-### Phase 4：Docker 部署
+### Phase 6：Docker 部署
 
 **新建 `Dockerfile`：**
 ```dockerfile
@@ -453,11 +742,13 @@ DeepAgents/
 
 | 阶段 | 工作量 | 说明 |
 |------|--------|------|
-| Phase 1 | 1天 | database.py, auth.py |
-| Phase 2 | 1-2天 | mcp_service_simple.py 改造 |
-| Phase 3 | 1-2天 | Login.vue, Register.vue, App.vue |
-| Phase 4 | 0.5天 | Dockerfile, docker-compose.yml |
-| **总计** | **4-6天** | - |
+| Phase 1 | 1.5天 | database.py（5个模型+数据访问函数）, auth.py |
+| Phase 2 | 0.5天 | tools.py 改造 |
+| Phase 3 | 1天 | resume_agent.py 改造（工具函数 + Checkpointer） |
+| Phase 4 | 2-3天 | mcp_service_simple.py（7个接口改造+移除全局缓存） |
+| Phase 5 | 1-2天 | Login.vue, Register.vue, App.vue |
+| Phase 6 | 0.5天 | Dockerfile, docker-compose.yml |
+| **总计** | **6.5-9天** | - |
 
 ---
 
@@ -476,11 +767,49 @@ A: 是的。对于简历助手这种轻量级应用：
 - Celery 增加架构复杂度
 
 ### Q: LangGraph 代码需要改吗？
-A: 不需要。只需在调用 graph 前后做数据持久化，LangGraph 核心代码保持不变。
+A: **部分需要**。具体改造：
+- `resume_agent.py` 的 `MemorySaver` → `SqliteSaver`（用于对话历史持久化）
+- `tools.py` 的 `read_file`/`write_file` → 改为数据库操作
+- `resume_agent.py` 的 `read_file_tool`/`write_file_tool` → 调整逻辑，优先使用 state 数据
+
+### Q: 改造后数据存储在哪里？
+A: **混合模式**：
+- 用户账号、邀请码 → `deepagents.db`（SQLite）
+- 简历数据、JD 数据、对话历史 → `deepagents.db` + JSON 文件（按用户隔离）
+- 对话状态（LangGraph checkpoint）→ `SqliteSaver`（自动按 thread_id 隔离）
+
+### Q: 多用户数据如何隔离？
+A: 两种方案：
+1. **SQLite Checkpointer**：按 `thread_id` 自动隔离（LangGraph 内置）
+2. **应用层隔离**：所有查询加上 `user_id` 条件（推荐）
+
+## 十四、数据流图
+
+```
+用户请求
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  mcp_service_simple.py                                      │
+│  1. 验证 JWT Token 获取 user_id                             │
+│  2. 从 SQLite 加载 resume_data, jd_data                     │
+│  3. 构造初始 state                                          │
+│  4. 调用 graph.invoke(state)                                │
+│  5. 从 state 取出结果，更新 SQLite                           │
+└─────────────────────────────────────────────────────────────┘
+         │                    │
+         ▼                    ▼
+┌──────────────────┐  ┌──────────────────┐
+│ SQLite           │  │ LangGraph        │
+│ (users, resumes, │  │ (SqliteSaver)    │
+│  jds, invite_    │  │ (对话状态持久化)  │
+│  codes)          │  │                  │
+└──────────────────┘  └──────────────────┘
+```
 
 ---
 
-## 十四、后续扩展（可选）
+## 十五、后续扩展（可选）
 
 当用户量增长到 5000+ 时，可平滑升级：
 

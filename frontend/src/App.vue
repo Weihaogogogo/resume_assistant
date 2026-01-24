@@ -1,8 +1,19 @@
 <script setup>
 import { ref, onMounted, watch, nextTick, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import RichTextEditor from './components/RichTextEditor.vue'
+
+// 认证状态
+const isLoggedIn = ref(false)
+const currentUser = ref(null)
+const token = ref(localStorage.getItem('access_token') || '')
+const router = useRouter()
+const route = useRoute()
+
+// 计算属性：判断是否为管理页面路由
+const isAdminRoute = computed(() => route.path === '/admin')
 
 // 聊天消息列表
 const messages = ref([])
@@ -22,14 +33,16 @@ const jdData = ref(null)
 const isLoading = ref(false)
 // 响应中状态（流式输出时）
 const isResponding = ref(false)
+// 确认区域状态（当有 confirm area 时，禁用输入）
+const hasConfirmArea = ref(false)
 // 加载文案状态
 const loadingText = ref('正在处理中...')
 let loadingTextInterval = null
 // 全屏弹窗状态
 const isFullscreenDialogOpen = ref(false)
 const dialogUserInput = ref('')
-// 会话ID - 用于保存对话历史
-const sessionId = ref(localStorage.getItem('resumeAssistantSessionId') || '')
+// 会话ID - 用于保存对话历史（固定为 default，确保跨会话持久化）
+const sessionId = ref('default')
 
 // 图片预览状态
 const showImagePreview = ref(false)
@@ -68,18 +81,57 @@ const workDetailsText = ref('')
 const projectDetailsText = ref('')
 const selfEvalText = ref('')
 
-// 移除消息数量计算属性
+// 获取认证 headers
+function getAuthHeaders() {
+  const headers = {
+    'Content-Type': 'application/json'
+  }
+  if (token.value) {
+    headers['Authorization'] = `Bearer ${token.value}`
+  }
+  return headers
+}
+
+// 检查登录状态
+async function checkLoginStatus() {
+  const savedToken = localStorage.getItem('access_token')
+  const savedUser = localStorage.getItem('user')
+
+  if (savedToken && savedUser) {
+    token.value = savedToken
+    currentUser.value = JSON.parse(savedUser)
+    isLoggedIn.value = true
+    // 加载简历数据
+    await loadResume()
+  } else {
+    isLoggedIn.value = false
+    currentUser.value = null
+  }
+}
 
 // 初始化简历数据
 onMounted(async () => {
+  // 等待登录状态检查完成
+  await checkLoginStatus()
+
+  // 如果未登录，不加载数据
+  if (!isLoggedIn.value) {
+    return
+  }
+
   try {
     const response = await fetch('http://localhost:8000/load_resume', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: getAuthHeaders(),
       body: JSON.stringify({})
     })
+
+    // 如果认证失败，跳转登录
+    if (response.status === 401) {
+      logout()
+      return
+    }
+
     const data = await response.json()
     resumeData.value = data
 
@@ -87,9 +139,13 @@ onMounted(async () => {
     try {
       const jdResponse = await fetch('http://localhost:8000/load_jd', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({})
       })
+      if (jdResponse.status === 401) {
+        logout()
+        return
+      }
       const jdResult = await jdResponse.json()
       if (jdResult && Object.keys(jdResult).length > 0) {
         jdData.value = jdResult
@@ -98,12 +154,36 @@ onMounted(async () => {
       console.log('暂无岗位数据，可以上传目标岗位信息获取针对性的简历优化建议')
     }
 
-    // 添加欢迎消息
-    messages.value.push({
-      id: Date.now(),
-      role: 'assistant',
-      content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-    })
+    // 加载对话历史
+    try {
+      const convResponse = await fetch('http://localhost:8000/load_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionId.value })
+      })
+      if (convResponse.status === 401) {
+        logout()
+        return
+      }
+      const convData = await convResponse.json()
+      if (Array.isArray(convData) && convData.length > 0) {
+        messages.value = convData
+      } else {
+        // 没有历史消息，添加欢迎消息
+        messages.value.push({
+          id: Date.now(),
+          role: 'assistant',
+          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
+        })
+      }
+    } catch (convError) {
+      console.log('加载对话历史失败')
+      messages.value.push({
+        id: Date.now(),
+        role: 'assistant',
+        content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
+      })
+    }
   } catch (error) {
     console.error('加载简历失败:', error)
     messages.value.push({
@@ -114,9 +194,113 @@ onMounted(async () => {
   }
 })
 
+// 监听路由变化，自动更新登录状态
+watch(() => route.path, () => {
+  checkLoginStatus()
+  // 如果登录成功且在首页，尝试加载数据
+  if (isLoggedIn.value && route.path === '/') {
+    loadInitialData()
+  }
+})
+
+// 加载初始数据的函数
+async function loadInitialData() {
+  try {
+    const response = await fetch('http://localhost:8000/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({})
+    })
+
+    if (response.status === 401) {
+      logout()
+      return
+    }
+
+    const data = await response.json()
+    resumeData.value = data
+
+    // 加载JD数据
+    try {
+      const jdResponse = await fetch('http://localhost:8000/load_jd', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({})
+      })
+      if (jdResponse.status === 401) {
+        logout()
+        return
+      }
+      const jdResult = await jdResponse.json()
+      if (jdResult && Object.keys(jdResult).length > 0) {
+        jdData.value = jdResult
+      }
+    } catch (jdError) {
+      console.log('暂无岗位数据')
+    }
+
+    // 加载对话历史
+    try {
+      const convResponse = await fetch('http://localhost:8000/load_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionId.value })
+      })
+      if (convResponse.status === 401) {
+        logout()
+        return
+      }
+      const convData = await convResponse.json()
+      if (Array.isArray(convData) && convData.length > 0) {
+        messages.value = convData
+      } else {
+        messages.value.push({
+          id: Date.now(),
+          role: 'assistant',
+          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
+        })
+      }
+    } catch (convError) {
+      messages.value.push({
+        id: Date.now(),
+        role: 'assistant',
+        content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
+      })
+    }
+  } catch (error) {
+    console.error('加载数据失败:', error)
+  }
+}
+
+// 登出
+function logout() {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('user')
+  token.value = ''
+  currentUser.value = null
+  isLoggedIn.value = false
+  // 刷新页面
+  window.location.reload()
+}
+
 // 发送消息
 async function sendMessage() {
+  // 检查登录状态
+  if (!isLoggedIn.value) {
+    alert('请先登录')
+    return
+  }
   if ((!userInput.value.trim() && uploadedFiles.value.length === 0) || isLoading.value) return
+
+  // 如果有未处理的 confirm area，取消它（用户发送了新消息）
+  const pendingConfirmIndex = messages.value.findIndex(m => m.type === 'confirm' && !m.handled)
+  if (pendingConfirmIndex !== -1) {
+    messages.value[pendingConfirmIndex] = {
+      ...messages.value[pendingConfirmIndex],
+      handled: true
+    }
+    hasConfirmArea.value = false
+  }
 
   const input = userInput.value.trim()
   userInput.value = ''
@@ -186,6 +370,9 @@ async function sendMessage() {
     // 使用fetch API处理SSE流式响应
     const response = await fetch('http://localhost:8000/chat', {
       method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token.value}`
+      },
       body: formData
     })
     
@@ -282,6 +469,26 @@ async function sendMessage() {
                     streaming: true
                   }
                 }
+              } else if (data.type === 'confirm') {
+                // 停止加载文案切换
+                if (loadingTextInterval) {
+                  clearTimeout(loadingTextInterval)
+                  loadingTextInterval = null
+                }
+                isLoading.value = false
+                isResponding.value = false
+                // 添加新的确认消息（不更新现有消息，确保按钮在AI消息下方显示）
+                messages.value.push({
+                  id: data.id || Date.now(),
+                  role: 'assistant',
+                  type: 'confirm',
+                  content: data.content,
+                  options: data.options,
+                  confirm_id: data.confirm_id,
+                  streaming: false
+                })
+                // 标记有 confirm area，禁用输入
+                hasConfirmArea.value = true
               } else if (data.type === 'end') {
                 // 结束信号，关闭连接
                 isResponding.value = false
@@ -319,6 +526,141 @@ async function sendMessage() {
   } finally {
     isLoading.value = false
     isResponding.value = false
+
+    // 保存对话历史（过滤掉未处理的 confirm 消息，已处理的 confirm 消息保留 handled 状态）
+    try {
+      const messagesToSave = messages.value.filter(m => !(m.type === 'confirm' && m.confirm_id && !m.handled))
+      await fetch('http://localhost:8000/save_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          session_id: sessionId.value,
+          messages: messagesToSave
+        })
+      })
+    } catch (saveError) {
+      console.error('保存对话历史失败:', saveError)
+    }
+  }
+}
+
+// 处理确认按钮点击
+async function handleOptionClick({ confirm_id, value }) {
+  // 找到并标记确认消息为已处理
+  const confirmMsgIndex = messages.value.findIndex(m => m.type === 'confirm' && m.confirm_id === confirm_id)
+  if (confirmMsgIndex !== -1) {
+    messages.value[confirmMsgIndex] = {
+      ...messages.value[confirmMsgIndex],
+      handled: true
+    }
+  }
+  // 清除 confirm area 状态
+  hasConfirmArea.value = false
+
+  // 如果点击取消，不调用 graph
+  if (value === 'cancel') {
+    return
+  }
+
+  // 发送确认回复到 /chat，触发 handle_confirmation → formatter_llm → save_resume_tool
+  const confirmMessage = `[CONFIRM_REPLY:${confirm_id}:${value}]`
+
+  const baseId = Date.now() * 1000 + Math.floor(Math.random() * 1000)
+  const userMessageId = baseId
+  const streamMessageId = baseId + 1
+
+  messages.value.push({
+    id: userMessageId,
+    role: 'user',
+    content: value === 'confirm' ? '确认保存' : '取消'
+  })
+
+  messages.value.push({
+    id: streamMessageId,
+    role: 'assistant',
+    content: '',
+    streaming: true
+  })
+
+  try {
+    isLoading.value = true
+    isResponding.value = true
+
+    const formData = new FormData()
+    formData.append('message', confirmMessage)
+    formData.append('session_id', sessionId.value)
+
+    const response = await fetch('http://localhost:8000/chat', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token.value}` },
+      body: formData
+    })
+
+    if (!response.ok) throw new Error(`HTTP错误! 状态: ${response.status}`)
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+
+    while (true) {
+      const { done, value: chunk } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(chunk, { stream: true })
+
+      let newlineIndex
+      while ((newlineIndex = buffer.indexOf('\n\n')) !== -1) {
+        const message = buffer.substring(0, newlineIndex)
+        buffer = buffer.substring(newlineIndex + 2)
+
+        if (message.startsWith('data: ')) {
+          const jsonData = message.substring(6).trim()
+          if (!jsonData) continue
+
+          try {
+            const data = JSON.parse(jsonData)
+
+            if (data.type === 'stream') {
+              isLoading.value = false
+              const idx = messages.value.findIndex(m => m.id === streamMessageId)
+              if (idx !== -1) {
+                messages.value[idx] = { ...messages.value[idx], content: data.content, streaming: true }
+              }
+            } else if (data.type === 'final') {
+              isLoading.value = false
+              isResponding.value = false
+              const idx = messages.value.findIndex(m => m.id === streamMessageId)
+              if (idx !== -1) {
+                messages.value[idx] = { ...messages.value[idx], content: data.content, streaming: false }
+              }
+              if (data.session_id) {
+                sessionId.value = data.session_id
+                localStorage.setItem('resumeAssistantSessionId', data.session_id)
+              }
+              updateResumeData()
+            } else if (data.type === 'end') {
+              isResponding.value = false
+              updateResumeData()
+              if (data.session_id) {
+                sessionId.value = data.session_id
+                localStorage.setItem('resumeAssistantSessionId', data.session_id)
+              }
+            }
+          } catch (e) {
+            console.error('解析JSON失败:', e)
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('确认操作失败:', error)
+    isLoading.value = false
+    isResponding.value = false
+    messages.value.push({
+      id: Date.now() + 2,
+      role: 'assistant',
+      content: '处理确认请求失败，请重试。'
+    })
   }
 }
 
@@ -346,9 +688,7 @@ async function updateResumeData() {
     // 先从服务器获取新数据
     const response = await fetch('http://localhost:8000/load_resume', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: getAuthHeaders(),
       body: JSON.stringify({})
     })
     const newData = await response.json()
@@ -538,6 +878,13 @@ function openResumeEditDialog() {
     }
   }
 
+  // 确保所有必要字段都存在（防御性编程）
+  resumeFormData.value.education = resumeFormData.value.education || []
+  resumeFormData.value.work_experience = resumeFormData.value.work_experience || []
+  resumeFormData.value.project_experience = resumeFormData.value.project_experience || []
+  resumeFormData.value.others = resumeFormData.value.others || { skills: [], certificates: [], languages: [] }
+  resumeFormData.value.self_evaluation = resumeFormData.value.self_evaluation || []
+
   // 初始化日期范围和"至今"标志
   const initDateRange = (item) => {
     if (!item.date_range) {
@@ -721,7 +1068,7 @@ async function loadResume() {
   try {
     const response = await fetch('http://localhost:8000/load_resume', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({})
     })
     const data = await response.json()
@@ -790,7 +1137,7 @@ async function saveResume() {
 
     const response = await fetch('http://localhost:8000/save_resume', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ resume_data: dataToSave })
     })
 
@@ -820,7 +1167,7 @@ async function parseJD() {
   try {
     const response = await fetch('http://localhost:8000/parse_jd', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         text: jdInputText.value,
         image: jdInputImage.value
@@ -872,7 +1219,7 @@ async function saveJD() {
   try {
     const response = await fetch('http://localhost:8000/save_jd', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         jd_data: jdFormData.value,
         session_id: sessionId.value
@@ -1049,18 +1396,29 @@ watch(
   <header class="app-header">
     <div class="header-content">
       <h1>
-        <svg class="app-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="12" x2="12" y2="12.01"></line><line x1="8" y1="8" x2="8" y2="8.01"></line><line x1="16" y1="8" x2="16" y2="8.01"></line></svg>
-        OfferFlow
+        <img src="@/assets/offerflow.svg" alt="OfferFlow" class="app-logo" />
       </h1>
       <!-- 移除消息数量提示 -->
       <div class="header-info">
+        <template v-if="isLoggedIn">
+          <span class="user-email">{{ currentUser?.email }}</span>
+          <button @click="logout" class="logout-btn">登出</button>
+        </template>
+        <template v-else>
+          <router-link to="/login" class="auth-link">登录</router-link>
+          <router-link to="/register" class="auth-link">注册</router-link>
+        </template>
       </div>
     </div>
   </header>
-  
+
   <!-- 主内容区（居中显示） -->
   <div class="app-container">
-    <div class="main-content">
+    <!-- 路由视图：登录/注册/管理页面 -->
+    <router-view v-if="!isLoggedIn || isAdminRoute"></router-view>
+
+    <!-- 已登录且非管理页面：显示主内容（聊天界面） -->
+    <div v-if="isLoggedIn && !isAdminRoute" class="main-content">
       <!-- 左侧聊天区 -->
       <div class="chat-section">
         <div class="chat-container">
@@ -1069,6 +1427,7 @@ watch(
               v-for="message in messages"
               :key="message.id + '_' + (message.content?.length || 0)"
               :message="message"
+              @optionClick="handleOptionClick"
             />
             <!-- 只有当没有过程消息且正在加载时才显示默认加载指示器 -->
           <div v-if="isLoading" class="loading-indicator">
@@ -1117,14 +1476,6 @@ watch(
               @change="handleFileSelect"
               style="display: none;"
             />
-            <button
-              @click="fileInput?.click()"
-              class="file-upload-btn"
-              :disabled="isLoading"
-              title="上传文件"
-            >
-              <svg class="upload-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-            </button>
             <div class="textarea-container">
               <textarea
                 v-model="userInput"
@@ -1132,24 +1483,46 @@ watch(
                 @paste="handlePaste"
                 placeholder="输入你的问题或请求..."
                 rows="1"
-                :disabled="isLoading"
+                :disabled="isLoading || isResponding"
               ></textarea>
-              <button
-                @click="openFullscreenDialog"
-                class="fullscreen-btn"
-                :disabled="isLoading"
-                title="全屏输入"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
-              </button>
+              <!-- 底部工具栏 -->
+              <div class="toolbar">
+                <button
+                  @click="fileInput?.click()"
+                  class="icon-btn"
+                  :disabled="isLoading || isResponding"
+                  title="上传文件"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
+                </button>
+                <button
+                  @click="openFullscreenDialog"
+                  class="icon-btn"
+                  :disabled="isLoading || isResponding"
+                  title="全屏输入"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                  </svg>
+                </button>
+                <button
+                  v-if="userInput.trim() || uploadedFiles.length > 0"
+                  @click="sendMessage"
+                  class="icon-btn send-btn"
+                  :disabled="isLoading || isResponding"
+                  title="发送"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                </button>
+              </div>
             </div>
-            <button
-              @click="sendMessage"
-              :disabled="isLoading || isResponding || (!userInput.trim() && uploadedFiles.length === 0)"
-              class="send-button"
-            >
-              <span>{{ isResponding ? 'Waiting...' : (isLoading ? 'Sending...' : 'Send') }}</span>
-            </button>
           </div>
         </div>
       </div>
@@ -1160,7 +1533,7 @@ watch(
           <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
         </div>
       </div>
-    </div>
+    </div> <!-- 闭合 v-else main-content -->
   </div>
 
   <!-- 图片预览弹窗 -->
@@ -1658,7 +2031,7 @@ watch(
   flex-direction: column;
   height: calc(100vh - 60px); /* 减去header高度 */
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  background-color: var(--secondary-color);
+  background-color: #e6e2dd;
   width: 100%;
   margin: 0;
   max-width: none;
@@ -1666,10 +2039,10 @@ watch(
 
 .app-header {
   width: 100%;
-  background-color: #ffffff;
+  background-color: rgb(249, 245, 242);
   color: var(--text-primary);
-  box-shadow: var(--shadow-sm);
-  border-bottom: 1px solid var(--border-color);
+  box-shadow: none;
+  border-bottom: 1px solid #303030;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -1688,16 +2061,130 @@ watch(
 
 .app-header h1 {
   margin: 0;
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+}
+
+.app-logo {
+  height: 26px;
+  width: auto;
 }
 
 .header-info {
   display: flex;
   gap: 1rem;
-  font-size: 0.9rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  color: #303030;
+  align-items: center;
+}
+
+.user-email {
+  color: #303030;
+  font-weight: 400;
+}
+
+.logout-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: transparent;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logout-btn:hover {
+  background: #303030;
+  color: #f8bebe;
+}
+
+.auth-link {
+  color: #303030;
+  text-decoration: none;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  transition: all 0.2s ease;
+}
+
+.auth-link:hover {
+  background: #303030;
+  color: #f8bebe;
+}
+
+/* 未登录提示样式 */
+.not-logged-in {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+}
+
+.not-logged-in-content {
+  text-align: center;
+  padding: 3rem;
+}
+
+.not-logged-in-content svg {
   color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+.not-logged-in-content h2 {
+  margin: 0 0 0.5rem 0;
+  color: var(--text-primary);
+  font-size: 1.5rem;
+}
+
+.not-logged-in-content p {
+  margin: 0 0 1.5rem 0;
+  color: var(--text-secondary);
+}
+
+.auth-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+.auth-btn {
+  padding: 0.75rem 2rem;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.login-btn {
+  background: white;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.login-btn:hover {
+  background: var(--secondary-color);
+}
+
+.register-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: white;
+}
+
+.register-btn:hover {
+  opacity: 0.9;
 }
 
 .message-count {
@@ -1719,12 +2206,12 @@ watch(
   flex: 0 0 40%; /* 聊天区域40%宽度，简历区域60% */
   display: flex;
   flex-direction: column;
-  background-color: white;
+  background-color: rgb(254, 253, 251);
   margin: 0;
   padding: 0;
   overflow: hidden;
   position: relative;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid #303030;
   height: 100%; /* 确保高度填满 */
 }
 
@@ -1760,7 +2247,7 @@ watch(
   flex: 1;
   overflow: hidden;
   padding: 0;
-  background-color: #ffffff;
+  background-color: transparent;
 }
 
 .messages-container {
@@ -1773,87 +2260,64 @@ watch(
   width: 100%;
   max-width: 1200px;
   margin: 0 auto;
+  font-size: 14px; /* 聊天区域字体缩小，避免内容太拥挤 */
 }
 
 .floating-input-container {
   position: relative;
   padding: 1rem;
-  background: #ffffff;
-  border-top: 1px solid var(--border-color);
+  background: rgb(254, 253, 251);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-repeat: repeat;
+  background-size: auto;
+  border-top: 1px solid transparent;
   flex-shrink: 0;
 }
 
 .input-wrapper {
   display: flex;
-  gap: 0.75rem;
   max-width: 100%;
-  background-color: #ffffff;
-  padding: 0.75rem;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  transition: all 0.3s ease;
-  border: 1px solid var(--border-color);
+  background-color: transparent;
 }
 
 .input-wrapper:focus-within {
-  box-shadow: 0 6px 25px rgba(0, 0, 0, 0.15);
-  border-color: #333333;
 }
 
-/* 文件上传按钮样式 */
-.file-upload-btn {
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: var(--secondary-color);
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.file-upload-btn:hover {
-  background-color: #f0f0f0;
-  border-color: #333333;
-  color: #333333;
-}
-
-.file-upload-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 文本域容器 */
+/* 文本域容器 - 模仿模板风格 */
 .textarea-container {
   flex: 1;
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  position: relative;
+  flex-direction: column;
+  background-color: #f5f4f2;
+  border: 1px solid #e0e0e0;
+  transition: all 0.2s ease;
+  overflow: hidden;
+  border-radius: 0;
+}
+
+.textarea-container:focus-within {
+  background-color: white;
+  border-color: #303030;
 }
 
 .textarea-container textarea {
   flex: 1;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  width: 100%;
+  padding: 1.125rem;
+  border: none;
   resize: none;
-  font-size: 0.95rem;
-  font-family: inherit;
-  background-color: #ffffff;
-  transition: all 0.3s ease;
-  min-height: 42px;
-  max-height: 120px;
+  font-size: 0.875rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  background-color: transparent;
+  transition: all 0.2s ease;
+  min-height: 4.0625rem;
+  max-height: 150px;
   overflow-y: auto;
-  /* 保持滚动功能但隐藏滚动条 */
-  overflow-x: hidden;
+  line-height: 1.5;
+  color: #303030;
 }
 
-/* 隐藏滚动条 */
 .textarea-container textarea::-webkit-scrollbar {
   display: none;
 }
@@ -1865,35 +2329,80 @@ watch(
 
 .textarea-container textarea:focus {
   outline: none;
-  border-color: #333333;
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
-  background-color: #ffffff;
 }
 
-/* 全屏按钮样式（在输入框内） */
-.textarea-container .fullscreen-btn {
+.textarea-container textarea::placeholder {
+  color: #666;
+}
+
+/* 底部工具栏 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0;
   padding: 0.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: var(--secondary-color);
-  color: var(--text-secondary);
+  border-top: none;
+  background-color: transparent;
+}
+
+/* 图标按钮 - 模仿模板风格 */
+.icon-btn {
+  background: transparent;
+  border: none;
+  padding: 0.5rem;
+  border-radius: 0;
+  color: #303030;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: all 0.15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
 }
 
-.textarea-container .fullscreen-btn:hover:not(:disabled) {
-  background-color: #f0f0f0;
-  border-color: #333333;
-  color: #333333;
+.icon-btn:hover:not(:disabled) {
+  background-color: transparent;
+  color: #f8bebe;
 }
 
-.textarea-container .fullscreen-btn:disabled {
-  opacity: 0.5;
+.icon-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+.icon-btn svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 发送按钮 - 模仿模板风格 */
+.send-btn {
+  color: #303030;
+  margin-left: auto;
+  background-color: transparent;
+  border: none;
+  padding: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.send-btn:hover:not(:disabled) {
+  background-color: transparent;
+  color: #f8bebe;
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.send-btn svg {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 /* 上传文件展示区域 */
@@ -2001,39 +2510,10 @@ watch(
   margin-bottom: 0.5rem;
 }
 
-.send-button {
-  padding: 0.75rem 1.5rem;
-  background-color: #333333;
-  color: white;
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: 0.95rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  align-self: flex-end;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.send-button:hover:not(:disabled) {
-  background-color: #555555;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-}
-
-.send-button:disabled {
-  background-color: #ced4da;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
 .resume-section {
   flex: 1;
   max-width: none;
-  background-color: white;
+  background-color: rgb(249, 245, 242);
   margin: 0;
   padding: 1rem;
   position: relative;
@@ -2153,12 +2633,9 @@ watch(
 /* 全屏弹窗样式 */
 .fullscreen-dialog-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   background-color: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2166,12 +2643,16 @@ watch(
 }
 
 .fullscreen-dialog {
-  background-color: white;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  background-color: rgb(254, 253, 251);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-repeat: repeat;
+  border: 1px solid #303030;
+  border-radius: 0;
+  box-shadow: none;
   width: 90%;
-  max-width: 800px;
-  max-height: 85vh;
+  max-width: 720px;
+  max-height: 80vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2181,24 +2662,28 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--border-color);
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #303030;
+  background-color: transparent;
 }
 
 .dialog-header h3 {
   margin: 0;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
 }
 
 .dialog-close-btn {
   padding: 0.5rem;
-  border: none;
+  border: 1px solid #303030;
   background: transparent;
-  color: var(--text-secondary);
+  color: #303030;
   cursor: pointer;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
@@ -2206,8 +2691,8 @@ watch(
 }
 
 .dialog-close-btn:hover {
-  background-color: var(--secondary-color);
-  color: var(--text-primary);
+  background: #303030;
+  color: #f8bebe;
 }
 
 .dialog-body {
@@ -2219,80 +2704,96 @@ watch(
 .dialog-textarea {
   width: 100%;
   height: 100%;
-  min-height: 300px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  min-height: 280px;
+  background-color: #f5f4f2;
+  border: 1px solid #e0e0e0;
+  border-radius: 0;
   padding: 1rem;
-  font-size: 1rem;
+  font-size: 0.875rem;
   line-height: 1.6;
   resize: none;
-  font-family: inherit;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  transition: all 0.2s ease;
+  color: #303030;
 }
 
 .dialog-textarea:focus {
   outline: none;
-  border-color: #333333;
-  box-shadow: 0 0 0 3px rgba(51, 51, 51, 0.1);
+  background-color: white;
+  border-color: #303030;
+}
+
+.dialog-textarea::placeholder {
+  color: #999;
 }
 
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
-  padding: 1.25rem 1.5rem;
-  border-top: 1px solid var(--border-color);
-  background-color: var(--secondary-color);
+  padding: 1rem 1.5rem;
+  border-top: 1px solid #303030;
+  background-color: transparent;
 }
 
 .dialog-cancel-btn {
-  padding: 0.75rem 1.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: white;
-  color: var(--text-secondary);
-  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: transparent;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .dialog-cancel-btn:hover {
-  background-color: var(--secondary-color);
-  color: var(--text-primary);
-  border-color: var(--primary-color);
+  background: #303030;
+  color: #f8bebe;
 }
 
 .dialog-save-btn {
-  padding: 0.75rem 1.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: white;
-  color: var(--text-secondary);
-  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: transparent;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .dialog-save-btn:hover {
-  background-color: var(--secondary-color);
-  color: var(--text-primary);
-  border-color: var(--primary-color);
+  background: #f8bebe;
+  border-color: #303030;
 }
 
 .dialog-submit-btn {
-  padding: 0.75rem 1.5rem;
-  border: none;
-  border-radius: var(--radius-md);
-  background-color: var(--primary-color);
-  color: white;
-  font-size: 0.95rem;
-  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: #f8bebe;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
   cursor: pointer;
   transition: all 0.2s ease;
+  box-shadow: 2px 2px 0 #303030;
 }
 
 .dialog-submit-btn:hover:not(:disabled) {
-  background-color: var(--primary-hover);
+  background: #303030;
+  color: #f8bebe;
+  box-shadow: none;
+  transform: translate(2px, 2px);
 }
 
 .dialog-submit-btn:disabled {
@@ -2326,6 +2827,7 @@ watch(
   position: fixed;
   inset: 0;
   background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2334,38 +2836,46 @@ watch(
 }
 
 .jd-dialog {
-  background-color: white;
-  border-radius: var(--radius-lg);
+  background-color: rgb(254, 253, 251);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-repeat: repeat;
+  border: 1px solid #303030;
+  border-radius: 0;
   width: 100%;
   max-width: 600px;
   max-height: 70vh;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-lg);
+  box-shadow: none;
 }
 
 .jd-dialog .dialog-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--border-color);
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #303030;
+  background-color: transparent;
 }
 
 .jd-dialog .dialog-header h3 {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
   margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
 }
 
 .jd-dialog .dialog-close-btn {
-  background: none;
-  border: none;
+  background: transparent;
+  border: 1px solid #303030;
   cursor: pointer;
   padding: 0.5rem;
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
+  border-radius: 0;
+  color: #303030;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2373,8 +2883,8 @@ watch(
 }
 
 .jd-dialog .dialog-close-btn:hover {
-  background-color: var(--secondary-color);
-  color: var(--text-primary);
+  background: #303030;
+  color: #f8bebe;
 }
 
 .jd-input-section {
@@ -2388,86 +2898,71 @@ watch(
 
 .jd-input-section .input-group label {
   display: block;
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
   margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .jd-input-section .input-group textarea {
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  border: 1px solid #e0e0e0;
+  border-radius: 0;
   font-size: 0.875rem;
   line-height: 1.5;
   resize: vertical;
-  font-family: inherit;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  background-color: #f5f4f2;
+  transition: all 0.2s ease;
+  color: #303030;
 }
 
 .jd-input-section .input-group textarea:focus {
   outline: none;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-.jd-input-section .divider {
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-  margin: 1rem 0;
-  position: relative;
-}
-
-.jd-input-section .divider::before,
-.jd-input-section .divider::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  width: 40%;
-  height: 1px;
-  background-color: var(--border-color);
-}
-
-.jd-input-section .divider::before {
-  left: 0;
-}
-
-.jd-input-section .divider::after {
-  right: 0;
+  border-color: #303030;
+  background-color: white;
 }
 
 .jd-input-section .image-upload-input {
   display: block;
   width: 100%;
   padding: 0.5rem;
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-md);
+  border: 1px dashed #303030;
+  border-radius: 0;
   font-size: 0.875rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
 }
 
 .jd-image-preview {
   width: 100%;
   max-height: 200px;
   object-fit: contain;
-  border-radius: var(--radius-md);
+  border-radius: 0;
   margin-top: 0.5rem;
-  border: 1px solid var(--border-color);
+  border: 1px solid #303030;
 }
 
 .remove-image-btn {
   margin-top: 0.5rem;
   padding: 0.4rem 0.8rem;
-  background: #fee2e2;
-  color: #dc2626;
-  border: none;
-  border-radius: var(--radius-sm);
+  background: transparent;
+  color: #303030;
+  border: 1px solid #303030;
+  border-radius: 0;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  transition: all 0.2s ease;
 }
 
 .remove-image-btn:hover {
-  background: #fecaca;
+  background: #f8bebe;
 }
 
 .jd-dialog .dialog-actions {
@@ -2475,30 +2970,35 @@ watch(
   justify-content: flex-end;
   gap: 0.75rem;
   padding: 1rem 1.5rem;
-  border-top: 1px solid var(--border-color);
-  background-color: #fafafa;
+  border-top: 1px solid #303030;
+  background-color: transparent;
   flex-shrink: 0;
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .parse-btn {
-  padding: 0.75rem 1.5rem;
-  border: none;
-  border-radius: var(--radius-md);
-  background-color: var(--primary-color);
-  color: white;
-  font-size: 0.875rem;
-  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: #f8bebe;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   cursor: pointer;
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
+  box-shadow: 2px 2px 0 #303030;
 }
 
 .parse-btn:hover:not(:disabled) {
-  background-color: var(--primary-hover);
+  background: #303030;
+  color: #f8bebe;
+  box-shadow: none;
+  transform: translate(2px, 2px);
 }
 
 .parse-btn:disabled {
@@ -2508,11 +3008,11 @@ watch(
 
 /* Spinner 动效 */
 .spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
-  border-radius: 50%;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(48, 48, 48, 0.3);
+  border-top-color: #303030;
+  border-radius: 0;
   animation: spin 0.8s linear infinite;
 }
 
@@ -2523,36 +3023,44 @@ watch(
 }
 
 .cancel-btn {
-  padding: 0.75rem 1.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: white;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: transparent;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .cancel-btn:hover {
-  background-color: var(--secondary-color);
-  color: var(--text-primary);
+  background: #303030;
+  color: #f8bebe;
 }
 
 .save-btn {
-  padding: 0.75rem 1.5rem;
-  border: none;
-  border-radius: var(--radius-md);
-  background-color: var(--primary-color);
-  color: white;
-  font-size: 0.875rem;
-  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border: 1px solid #303030;
+  border-radius: 0;
+  background: #f8bebe;
+  color: #303030;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   cursor: pointer;
   transition: all 0.2s ease;
+  box-shadow: 2px 2px 0 #303030;
 }
 
 .save-btn:hover {
-  background-color: var(--primary-hover);
+  background: #303030;
+  color: #f8bebe;
+  box-shadow: none;
+  transform: translate(2px, 2px);
 }
 
 /* JD表单样式 */
@@ -2732,6 +3240,7 @@ watch(
   position: fixed;
   inset: 0;
   background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2740,14 +3249,55 @@ watch(
 }
 
 .resume-dialog {
-  background-color: white;
-  border-radius: var(--radius-lg);
+  background-color: rgb(254, 253, 251);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-repeat: repeat;
+  border: 1px solid #303030;
+  border-radius: 0;
   width: 100%;
   max-width: 700px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-lg);
+  box-shadow: none;
+}
+
+.resume-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #303030;
+  background-color: transparent;
+}
+
+.resume-dialog .dialog-header h3 {
+  font-size: 0.875rem;
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+.resume-dialog .dialog-close-btn {
+  background: transparent;
+  border: 1px solid #303030;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 0;
+  color: #303030;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.resume-dialog .dialog-close-btn:hover {
+  background: #303030;
+  color: #f8bebe;
 }
 
 .resume-form-section {
@@ -2757,8 +3307,8 @@ watch(
 }
 
 .array-item {
-  border: 1px solid #e9ecef;
-  border-radius: var(--radius-md);
+  border: 1px solid #303030;
+  border-radius: 0;
   padding: 1rem;
   margin-bottom: 1rem;
 }
@@ -2768,9 +3318,12 @@ watch(
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.75rem;
-  font-weight: 500;
-  font-size: 0.875rem;
-  color: var(--text-primary);
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.75rem;
+  color: #303030;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .array-item-nested {
@@ -2780,8 +3333,12 @@ watch(
 .array-item-nested > label {
   display: block;
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
   margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .nested-item {
@@ -2797,50 +3354,58 @@ watch(
 .add-btn {
   width: 100%;
   padding: 0.5rem;
-  border: 1px dashed #ccc;
+  border: 1px dashed #303030;
   background: none;
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  font-size: 0.875rem;
-  color: var(--text-secondary);
+  border-radius: 0;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  color: #303030;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   transition: all 0.2s ease;
 }
 
 .add-btn:hover {
-  background: #f8f9fa;
-  border-color: var(--primary-color);
-  color: var(--primary-color);
+  background: #f8bebe;
+  border-color: #303030;
 }
 
 .add-nested-btn {
-  padding: 0.35rem 0.75rem;
-  font-size: 0.8rem;
-  border: 1px dashed #ccc;
+  padding: 0.4rem 0.75rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  border: 1px dashed #303030;
   background: none;
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+  border-radius: 0;
+  color: #303030;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   transition: all 0.2s ease;
 }
 
 .add-nested-btn:hover {
-  border-color: var(--primary-color);
-  color: var(--primary-color);
+  background: #f8bebe;
+  border-color: #303030;
 }
 
 .remove-btn {
-  color: var(--error-color);
+  color: #303030;
   background: none;
-  border: none;
+  border: 1px solid #303030;
   cursor: pointer;
-  font-size: 0.875rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
   padding: 0.25rem 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .remove-btn:hover {
-  background: #fee2e2;
-  color: var(--error-hover);
-  border-radius: var(--radius-sm);
+  background: #f8bebe;
+  color: #303030;
+  border-color: #303030;
 }
 
 /* 日期选择器样式 */
@@ -3011,15 +3576,14 @@ watch(
   justify-content: flex-end;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  border-top: 1px solid var(--border-color);
-  background-color: #fafafa;
+  border-top: 1px solid #303030;
+  background-color: transparent;
   flex-shrink: 0;
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .cancel-btn, .save-btn {
   min-width: 80px;
-  padding: 0.6rem 1.2rem;
+  padding: 0.5rem 1rem;
 }
 
 .save-btn:disabled {
@@ -3031,17 +3595,137 @@ watch(
   margin-right: 0.4rem;
 }
 
+/* 字段组的样式 */
+.field-group label {
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: #303030;
+  margin-bottom: 0.2rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.field-group input,
+.field-group select,
+.field-group textarea {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 0;
+  font-size: 0.8rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  background: #f5f4f2;
+  transition: all 0.2s ease;
+  color: #303030;
+}
+
+.field-group input:hover,
+.field-group select:hover,
+.field-group textarea:hover {
+  border-color: #303030;
+}
+
+.field-group input:focus,
+.field-group select:focus,
+.field-group textarea:focus {
+  outline: none;
+  border-color: #303030;
+  background: #fff;
+  box-shadow: none;
+}
+
+.field-group input::placeholder,
+.field-group textarea::placeholder {
+  color: #999;
+}
+
+.field-group textarea {
+  resize: vertical;
+  min-height: 56px;
+  line-height: 1.5;
+}
+
+.tags-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 0;
+  align-items: center;
+  background: #f5f4f2;
+}
+
+.tags-input .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background-color: #e6e2dd;
+  border-radius: 0;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  color: #303030;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tags-input .tag-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  color: #303030;
+}
+
+.tags-input .tag-remove:hover {
+  color: #f8bebe;
+}
+
+.tags-input .tag-input {
+  flex: 1;
+  min-width: 100px;
+  border: none;
+  padding: 0.25rem;
+  font-size: 0.875rem;
+  background: transparent;
+}
+
+.tags-input .tag-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
 /* 字段组的 select 样式 */
 .field-group select {
   width: 100%;
   padding: 0.5rem 0.6rem;
-  border: 1px solid #e9ecef;
-  border-radius: var(--radius-sm);
+  border: 1px solid #e0e0e0;
+  border-radius: 0;
   font-size: 0.8rem;
-  font-family: inherit;
-  background: #fafafa;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  background: #f5f4f2;
   cursor: pointer;
   transition: all 0.2s ease;
+  color: #303030;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23303030' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  padding-right: 1.5rem;
+}
+
+.field-group select:hover {
+  border-color: #303030;
+}
+
+.field-group select:focus {
+  outline: none;
+  border-color: #303030;
+  background-color: #fff;
 }
 
 .field-group select:hover {

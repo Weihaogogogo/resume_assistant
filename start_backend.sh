@@ -31,11 +31,11 @@ fi
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-# 使用conda环境中的Python（如果存在）
-if [[ -f "/opt/anaconda3/bin/python" ]]; then
+# 优先使用本地虚拟环境
+if [[ -f "$SCRIPT_DIR/.venv/bin/python" ]]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python"
+elif [[ -f "/opt/anaconda3/bin/python" ]]; then
     PYTHON="/opt/anaconda3/bin/python"
-elif [[ -f "$SCRIPT_DIR/venv/bin/python" ]]; then
-    PYTHON="$SCRIPT_DIR/venv/bin/python"
 else
     PYTHON="python3"
 fi
