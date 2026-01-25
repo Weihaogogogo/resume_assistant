@@ -1065,16 +1065,18 @@ import sqlite3
 
 use_sqlite = os.getenv("USE_SQLITE_CHECKPOINTER", "false").lower() == "true"
 
-if use_sqlite:
-    # 使用 SQLite 持久化 checkpointer（Docker 部署时使用）
+# 检测是否在 Docker 环境中运行
+in_docker = os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", "")
+
+if use_sqlite and in_docker:
+    # Docker 部署：使用 SQLite 持久化 checkpointer
     db_path = os.getenv("CHECKPOINTER_DB_PATH", "/app/data/checkpointer.db")
-    # 确保目录存在
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
     print(f"[Checkpointer] 使用 SQLite: {db_path}")
 else:
-    # 使用内存存储（开发环境）
+    # 本地开发：使用内存存储
     checkpointer = MemorySaver()
     print("[Checkpointer] 使用内存存储")
 
