@@ -1060,44 +1060,23 @@ graph_builder.add_conditional_edges(
 # 编译图（带 checkpointer 用于状态持久化）
 # 根据环境变量选择 checkpointer
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-import aiosqlite
-import asyncio
 
 use_sqlite = os.getenv("USE_SQLITE_CHECKPOINTER", "false").lower() == "true"
 
 # 检测是否在 Docker 环境中运行
 in_docker = os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", "")
 
-async def create_async_checkpointer():
-    """创建异步 checkpointer"""
-    db_path = os.getenv("CHECKPOINTER_DB_PATH", "/app/data/checkpointer.db")
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = await aiosqlite.connect(db_path)
-    checkpointer = AsyncSqliteSaver(conn)
-    print(f"[Checkpointer] 使用 AsyncSQLite: {db_path}")
-    return checkpointer
+if use_sqlite and in_docker:
+    # Docker 部署：使用内存存储（避免 Gunicorn 多进程下异步问题）
+    checkpointer = MemorySaver()
+    print("[Checkpointer] 使用内存存储 (Docker模式)")
+else:
+    # 本地开发：使用内存存储
+    checkpointer = MemorySaver()
+    print("[Checkpointer] 使用内存存储")
 
-async def init_graph():
-    """异步初始化图"""
-    global graph
-    
-    if use_sqlite and in_docker:
-        checkpointer = await create_async_checkpointer()
-    else:
-        checkpointer = MemorySaver()
-        print("[Checkpointer] 使用内存存储")
-    
-    graph = graph_builder.compile(checkpointer=checkpointer)
-
-# 在模块加载时初始化
-try:
-    asyncio.run(init_graph())
-except Exception as e:
-    print(f"[Checkpointer] 初始化失败: {e}")
-    # 回退到内存存储
-    graph = graph_builder.compile(checkpointer=MemorySaver())
-    print("[Checkpointer] 回退到内存存储")
+graph = graph_builder.compile(checkpointer=checkpointer)
+print("[Checkpointer] 图编译完成")
 # =============================================================================
 # 测试函数
 # =============================================================================
