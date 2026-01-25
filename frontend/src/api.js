@@ -7,8 +7,8 @@ function getApiBase() {
   if (import.meta.env.PROD) {
     return ''
   }
-  // 开发环境：使用 localhost
-  return '/'
+  // 开发环境：代理路径（与 vite.config.js 中的 proxy 配置一致）
+  return ''
 }
 
 // 通用 fetch 封装

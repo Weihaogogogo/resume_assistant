@@ -12,9 +12,57 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/': {
+      '/auth': {
         target: 'http://localhost:8000',
         changeOrigin: true
+      },
+      '/health': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/load_resume': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/save_resume': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/load_jd': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/save_jd': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/load_conversation': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/save_conversation': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/chat': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/parse_jd': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/export_pdf': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/confirm': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/ws': {
+        target: 'ws://localhost:8000',
+        ws: true
       }
     }
   }

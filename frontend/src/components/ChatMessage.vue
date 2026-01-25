@@ -12,11 +12,8 @@ marked.use({
 // 确保加粗语法被正确渲染
 const preprocessMarkdown = (text) => {
   if (typeof text !== 'string') return text
-  // 递归替换嵌套的 **text**
-  while (text.includes('**')) {
-    text = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-  }
-  return text
+  // 只处理成对出现的 **，使用正则一次性替换
+  return text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
 }
 
 // 接收消息属性

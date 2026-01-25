@@ -84,7 +84,7 @@ export default {
     async fetchCodes() {
       try {
         const token = localStorage.getItem('access_token')
-        const response = await fetch('//auth/invite-codes', {
+        const response = await fetch('/auth/invite-codes', {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${token}`
@@ -105,7 +105,7 @@ export default {
       this.loading = true
       try {
         const token = localStorage.getItem('access_token')
-        const response = await fetch('//auth/invite-codes', {
+        const response = await fetch('/auth/invite-codes', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
