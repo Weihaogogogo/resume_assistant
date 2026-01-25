@@ -20,13 +20,10 @@ FROM nginx:alpine
 # 复制构建文件
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# 复制 Nginx 配置
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# 清理默认配置
+RUN rm -f /etc/nginx/conf.d/default.conf
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=3s \
-  CMD wget --no-verbose --tries=1 --spider http://localhost/ || exit 1
-
+# 暴露端口
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]

@@ -1058,10 +1058,23 @@ graph_builder.add_conditional_edges(
 )
 
 # 编译图（带 checkpointer 用于状态持久化）
-# 使用 MemorySaver（内存存储）
+# 根据环境变量选择 checkpointer
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
 
-checkpointer = MemorySaver()
+use_sqlite = os.getenv("USE_SQLITE_CHECKPOINTER", "false").lower() == "true"
+
+if use_sqlite:
+    # 使用 SQLite 持久化 checkpointer（Docker 部署时使用）
+    db_path = os.getenv("CHECKPOINTER_DB_PATH", "/app/data/checkpointer.db")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+    print(f"[Checkpointer] 使用 SQLite: {db_path}")
+else:
+    # 使用内存存储（开发环境）
+    checkpointer = MemorySaver()
+    print("[Checkpointer] 使用内存存储")
 
 graph = graph_builder.compile(checkpointer=checkpointer)
 # =============================================================================
