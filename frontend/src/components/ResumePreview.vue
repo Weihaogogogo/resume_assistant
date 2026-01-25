@@ -433,7 +433,7 @@ const exportPDF = async () => {
 
     // 调用后端API
     const token = localStorage.getItem('access_token') || ''
-    const response = await fetch('http://localhost:8000/export_pdf', {
+    const response = await fetch('//export_pdf', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

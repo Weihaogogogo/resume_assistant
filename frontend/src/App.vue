@@ -120,7 +120,7 @@ onMounted(async () => {
   }
 
   try {
-    const response = await fetch('http://localhost:8000/load_resume', {
+    const response = await fetch('//load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({})
@@ -137,7 +137,7 @@ onMounted(async () => {
 
     // 加载JD数据（新增）
     try {
-      const jdResponse = await fetch('http://localhost:8000/load_jd', {
+      const jdResponse = await fetch('//load_jd', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({})
@@ -156,7 +156,7 @@ onMounted(async () => {
 
     // 加载对话历史
     try {
-      const convResponse = await fetch('http://localhost:8000/load_conversation', {
+      const convResponse = await fetch('//load_conversation', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ session_id: sessionId.value })
@@ -206,7 +206,7 @@ watch(() => route.path, () => {
 // 加载初始数据的函数
 async function loadInitialData() {
   try {
-    const response = await fetch('http://localhost:8000/load_resume', {
+    const response = await fetch('//load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({})
@@ -222,7 +222,7 @@ async function loadInitialData() {
 
     // 加载JD数据
     try {
-      const jdResponse = await fetch('http://localhost:8000/load_jd', {
+      const jdResponse = await fetch('//load_jd', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({})
@@ -241,7 +241,7 @@ async function loadInitialData() {
 
     // 加载对话历史
     try {
-      const convResponse = await fetch('http://localhost:8000/load_conversation', {
+      const convResponse = await fetch('//load_conversation', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ session_id: sessionId.value })
@@ -368,7 +368,7 @@ async function sendMessage() {
     })
 
     // 使用fetch API处理SSE流式响应
-    const response = await fetch('http://localhost:8000/chat', {
+    const response = await fetch('//chat', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token.value}`
@@ -530,7 +530,7 @@ async function sendMessage() {
     // 保存对话历史（过滤掉未处理的 confirm 消息，已处理的 confirm 消息保留 handled 状态）
     try {
       const messagesToSave = messages.value.filter(m => !(m.type === 'confirm' && m.confirm_id && !m.handled))
-      await fetch('http://localhost:8000/save_conversation', {
+      await fetch('//save_conversation', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
@@ -590,7 +590,7 @@ async function handleOptionClick({ confirm_id, value }) {
     formData.append('message', confirmMessage)
     formData.append('session_id', sessionId.value)
 
-    const response = await fetch('http://localhost:8000/chat', {
+    const response = await fetch('//chat', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token.value}` },
       body: formData
@@ -686,7 +686,7 @@ function detectChangedModule(oldData, newData) {
 async function updateResumeData() {
   try {
     // 先从服务器获取新数据
-    const response = await fetch('http://localhost:8000/load_resume', {
+    const response = await fetch('//load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({})
@@ -1066,7 +1066,7 @@ function addResumeLang() {
 // 加载简历数据
 async function loadResume() {
   try {
-    const response = await fetch('http://localhost:8000/load_resume', {
+    const response = await fetch('//load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({})
@@ -1135,7 +1135,7 @@ async function saveResume() {
     // 将自我评价多行文本转换回数组
     dataToSave.self_evaluation = multilineToArray(selfEvalText.value)
 
-    const response = await fetch('http://localhost:8000/save_resume', {
+    const response = await fetch('//save_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ resume_data: dataToSave })
@@ -1165,7 +1165,7 @@ async function parseJD() {
 
   isParsingJD.value = true
   try {
-    const response = await fetch('http://localhost:8000/parse_jd', {
+    const response = await fetch('//parse_jd', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({
@@ -1217,7 +1217,7 @@ async function parseJD() {
 async function saveJD() {
   isSaving.value = true
   try {
-    const response = await fetch('http://localhost:8000/save_jd', {
+    const response = await fetch('//save_jd', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({
