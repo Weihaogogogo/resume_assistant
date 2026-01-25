@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdk-pixbuf2.0-0 \
     libffi-dev \
     shared-mime-info \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -33,5 +34,5 @@ RUN mkdir -p data && touch data/deepagents.db
 # 暴露端口
 EXPOSE 8000
 
-# 启动命令
-CMD ["python", "-m", "uvicorn", "mcp_service_simple:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# 使用 Gunicorn（生产环境推荐）
+CMD ["gunicorn", "mcp_service_simple:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
