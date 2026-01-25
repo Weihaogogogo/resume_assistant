@@ -10,9 +10,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libharfbuzz0a \
+    libharfbuzz0b \
     libcairo2 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
+    libjpeg62-turbo \
     libffi-dev \
     shared-mime-info \
     curl \
