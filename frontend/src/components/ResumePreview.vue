@@ -383,16 +383,20 @@ const showControlPanel = (event) => {
     clearTimeout(controlPanelTimeout.value)
     // 隐藏所有其他控制面板
     document.querySelectorAll('.toolbar-controls').forEach(panel => {
-      if (panel !== toolbarControls) panel.style.display = 'none'
+      if (panel !== toolbarControls) {
+        panel.style.visibility = 'hidden'
+        panel.style.opacity = '0'
+      }
     })
 
     // 使用 fixed 定位，脱离所有层叠上下文
     const rect = event.currentTarget.getBoundingClientRect()
     toolbarControls.style.position = 'fixed'
-    toolbarControls.style.left = `${rect.left}px`
-    toolbarControls.style.transform = 'none'
+    toolbarControls.style.left = `${rect.left + rect.width / 2}px`
+    toolbarControls.style.transform = 'translateX(-50%)'
     toolbarControls.style.top = `${rect.bottom + window.scrollY}px`
-    toolbarControls.style.display = 'flex'
+    toolbarControls.style.visibility = 'visible'
+    toolbarControls.style.opacity = '1'
   }
 }
 
@@ -400,7 +404,8 @@ const hideControlPanel = (event) => {
   const toolbarControls = event.currentTarget.querySelector('.toolbar-controls')
   if (toolbarControls) {
     controlPanelTimeout.value = setTimeout(() => {
-      toolbarControls.style.display = 'none'
+      toolbarControls.style.visibility = 'hidden'
+      toolbarControls.style.opacity = '0'
     }, 150)
   }
 }
@@ -1129,7 +1134,8 @@ const getItemIndex = (type, dataIndex) => {
   color: #f8bebe;
 }
 .toolbar-controls {
-  display: none;
+  visibility: hidden;
+  opacity: 0;
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
@@ -1145,11 +1151,14 @@ const getItemIndex = (type, dataIndex) => {
   z-index: 10000;
   min-width: 220px;
   white-space: nowrap;
+  transition: visibility 0s linear 0.15s, opacity 0.15s ease;
 }
 .toolbar-section:hover > .toolbar-controls,
 .toolbar-section:hover > .toolbar-title,
 .toolbar-controls:hover {
-  display: flex;
+  visibility: visible;
+  opacity: 1;
+  transition: visibility 0s linear 0s, opacity 0.15s ease;
 }
 .control-item {
   display: flex;
@@ -1163,7 +1172,7 @@ const getItemIndex = (type, dataIndex) => {
   color: #303030;
   font-weight: 400;
   white-space: nowrap;
-  min-width: 60px;
+  width: 90px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }

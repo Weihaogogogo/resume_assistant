@@ -5,6 +5,28 @@ import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import RichTextEditor from './components/RichTextEditor.vue'
 
+// Tooltip 状态管理
+const tooltipState = ref({ visible: false, text: '', x: 0, bottom: 0 })
+
+function showTooltip(event, text) {
+  const button = event.currentTarget
+  const rect = button.getBoundingClientRect()
+  const viewportHeight = window.innerHeight
+  
+  // 计算 tooltip 应该显示在按钮上方
+  // 使用 bottom 属性：从视口底部向上计算
+  tooltipState.value = {
+    visible: true,
+    text: text,
+    x: rect.left + rect.width / 2,
+    bottom: viewportHeight - rect.top
+  }
+}
+
+function hideTooltip() {
+  tooltipState.value.visible = false
+}
+
 // 认证状态
 const isLoggedIn = ref(false)
 const currentUser = ref(null)
@@ -1487,11 +1509,14 @@ watch(
               ></textarea>
               <!-- 底部工具栏 -->
               <div class="toolbar">
+                <!-- 上传按钮 -->
                 <button
                   @click="fileInput?.click()"
                   class="icon-btn"
                   :disabled="isLoading || isResponding"
-                  title="上传文件"
+                  @mouseenter="(e) => showTooltip(e, '上传文件')"
+                  @mouseleave="hideTooltip"
+                  @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -1499,22 +1524,26 @@ watch(
                     <line x1="12" y1="3" x2="12" y2="15"></line>
                   </svg>
                 </button>
+                <!-- 全屏按钮 -->
                 <button
                   @click="openFullscreenDialog"
                   class="icon-btn"
                   :disabled="isLoading || isResponding"
-                  title="全屏输入"
+                  @mouseenter="(e) => showTooltip(e, '全屏输入')"
+                  @mouseleave="hideTooltip"
+                  @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
                   </svg>
                 </button>
+                <!-- 发送按钮 - 预留空间避免高度突变 -->
+                <div class="send-btn-placeholder" v-if="!(userInput.trim() || uploadedFiles.length > 0)"></div>
                 <button
                   v-if="userInput.trim() || uploadedFiles.length > 0"
                   @click="sendMessage"
                   class="icon-btn send-btn"
                   :disabled="isLoading || isResponding"
-                  title="发送"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -1549,6 +1578,19 @@ watch(
         <img :src="previewImageUrl" class="image-preview-image" alt="Preview" />
       </div>
     </div>
+  </Teleport>
+
+  <!-- 自定义 Tooltip -->
+  <Teleport to="body">
+    <Transition name="tooltip-fade">
+      <div 
+        v-if="tooltipState.visible" 
+        class="custom-tooltip"
+        :style="{ left: tooltipState.x + 'px', bottom: tooltipState.bottom + 'px' }"
+      >
+        {{ tooltipState.text }}
+      </div>
+    </Transition>
   </Teleport>
 
   <!-- 全屏输入弹窗 -->
@@ -2403,6 +2445,38 @@ watch(
 .send-btn svg {
   width: 1.25rem;
   height: 1.25rem;
+}
+
+/* 发送按钮占位符 - 预留空间避免高度突变 */
+.send-btn-placeholder {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+}
+
+/* 自定义 Tooltip 样式 - 使用 Teleport 渲染到 body */
+.custom-tooltip {
+  position: fixed;
+  transform: translateX(-50%);
+  background-color: #303030;
+  color: white;
+  padding: 0.375rem 0.625rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Tooltip 淡入淡出动画 */
+.tooltip-fade-enter-active,
+.tooltip-fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.tooltip-fade-enter-from,
+.tooltip-fade-leave-to {
+  opacity: 0;
 }
 
 /* 上传文件展示区域 */
