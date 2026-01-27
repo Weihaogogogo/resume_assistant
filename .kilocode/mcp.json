@@ -1,0 +1,1 @@
+{"mcpServers":{"MiniMax":{"command":".venv/bin/python","args":["-m","minimax_mcp.server"],"env":{"MINIMAX_API_KEY":"sk-cp-ZzdEKOgkZum1vXh6E6XebhSBNdjw_gXPOW9xM2kbN7COv9SwciIkpw6H1KQ1-EFq54iQPsuxj2xS_zY2jqhaiROzm_wpYdX9k5oQXzzBaSddpAPpGnUTH3k","MINIMAX_API_HOST":"https://api.minimaxi.com"},"disabled":false,"alwaysAllow":["understand_image","web_search"]}}}

@@ -383,16 +383,20 @@ const showControlPanel = (event) => {
     clearTimeout(controlPanelTimeout.value)
     // 隐藏所有其他控制面板
     document.querySelectorAll('.toolbar-controls').forEach(panel => {
-      if (panel !== toolbarControls) panel.style.display = 'none'
+      if (panel !== toolbarControls) {
+        panel.style.visibility = 'hidden'
+        panel.style.opacity = '0'
+      }
     })
 
     // 使用 fixed 定位，脱离所有层叠上下文
     const rect = event.currentTarget.getBoundingClientRect()
     toolbarControls.style.position = 'fixed'
-    toolbarControls.style.left = `${rect.left}px`
-    toolbarControls.style.transform = 'none'
+    toolbarControls.style.left = `${rect.left + rect.width / 2}px`
+    toolbarControls.style.transform = 'translateX(-50%)'
     toolbarControls.style.top = `${rect.bottom + window.scrollY}px`
-    toolbarControls.style.display = 'flex'
+    toolbarControls.style.visibility = 'visible'
+    toolbarControls.style.opacity = '1'
   }
 }
 
@@ -400,7 +404,8 @@ const hideControlPanel = (event) => {
   const toolbarControls = event.currentTarget.querySelector('.toolbar-controls')
   if (toolbarControls) {
     controlPanelTimeout.value = setTimeout(() => {
-      toolbarControls.style.display = 'none'
+      toolbarControls.style.visibility = 'hidden'
+      toolbarControls.style.opacity = '0'
     }, 150)
   }
 }
@@ -432,10 +437,12 @@ const exportPDF = async () => {
     }
 
     // 调用后端API
-    const response = await fetch('http://localhost:8000/export_pdf', {
+    const token = localStorage.getItem('access_token') || ''
+    const response = await fetch('/export_pdf', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify({
         resume_data: props.data,
@@ -534,8 +541,8 @@ const getItemIndex = (type, dataIndex) => {
 </script>
 
 <template>
-  <div v-if="data" class="resume-wrapper">
-    <!-- 工具栏 - 相对于整个简历区域 sticky -->
+  <div class="resume-wrapper">
+    <!-- 工具栏 - 始终显示 -->
     <div class="resume-toolbar-wrapper">
       <div class="resume-toolbar">
         <div class="toolbar-icon">
@@ -612,7 +619,7 @@ const getItemIndex = (type, dataIndex) => {
             </svg>
             <span>目标岗位</span>
           </button>
-          <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF">
+          <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
             <span v-if="isExportingPDF" class="spinner"></span>
             <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
           </button>
@@ -620,27 +627,29 @@ const getItemIndex = (type, dataIndex) => {
       </div>
     </div>
 
-    <!-- 预览内容区域 -->
-    <div class="preview-content" ref="containerRef">
+    <!-- 有简历数据时显示预览 -->
+    <template v-if="data">
+      <!-- 预览内容区域 -->
+      <div class="preview-content" ref="containerRef">
       <!-- 隐藏的完整内容（用于测量） -->
       <div ref="contentRef" class="content-source" :style="[pageStyles, pagePaddingStyle]">
       <!-- 个人信息 -->
       <div v-if="data.basics" class="pageable-item personal-info" :class="{ 'module-highlight': highlightedModule === 'basics' }" data-module="basics">
         <h1 class="name">{{ data.basics.name || '姓名未填写' }}</h1>
         <div class="contact-info">
-          <span v-if="data.basics.gender" v-html="formatText(data.basics.gender)"></span>
-          <span v-if="data.basics.gender || data.basics.phone" class="separator">|</span>
-          <span v-if="data.basics.phone" v-html="formatText(data.basics.phone)"></span>
-          <span v-if="(data.basics.gender || data.basics.phone) && data.basics.email" class="separator">|</span>
-          <span v-if="data.basics.email" v-html="formatText(data.basics.email)"></span>
+          <span v-if="data.basics?.gender" v-html="formatText(data.basics.gender)"></span>
+          <span v-if="data.basics?.gender || data.basics?.phone" class="separator">|</span>
+          <span v-if="data.basics?.phone" v-html="formatText(data.basics.phone)"></span>
+          <span v-if="(data.basics?.gender || data.basics?.phone) && data.basics?.email" class="separator">|</span>
+          <span v-if="data.basics?.email" v-html="formatText(data.basics.email)"></span>
         </div>
-        <div v-if="data.basics.target_position" class="target-position">
+        <div v-if="data.basics?.target_position" class="target-position">
           目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
         </div>
       </div>
 
       <!-- 教育经历 -->
-      <template v-if="data.education">
+      <template v-if="data.education && data.education.length">
         <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">教育经历</h2>
         <div v-for="(item, idx) in data.education" :key="idx" class="pageable-item education-item">
           <div class="education-header">
@@ -670,7 +679,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 工作经历 -->
-      <template v-if="data.work_experience">
+      <template v-if="data.work_experience && data.work_experience.length">
         <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">工作经历</h2>
         <div v-for="(item, idx) in data.work_experience" :key="idx" class="pageable-item work-item">
           <div class="work-header">
@@ -693,7 +702,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 项目经历 -->
-      <template v-if="data.project_experience || data.projects">
+      <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
         <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">项目经历</h2>
         <div v-for="(item, idx) in (data.project_experience || data.projects)" :key="idx" class="pageable-item project-item">
           <div class="project-header">
@@ -717,7 +726,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 其他 -->
-      <template v-if="data.others">
+      <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
         <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'others' }" data-module="others">其他</h2>
         <!-- 技能一行显示 -->
         <template v-if="data.others.skills?.length">
@@ -749,7 +758,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 自我评价 -->
-      <template v-if="data.self_evaluation">
+      <template v-if="data.self_evaluation && data.self_evaluation.length">
         <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">自我评价</h2>
         <!-- 每条自我评价独立分页 -->
         <template v-for="(item, idx) in data.self_evaluation">
@@ -761,24 +770,24 @@ const getItemIndex = (type, dataIndex) => {
     </div>
 
     <!-- 打印专用容器 - 连续内容流，让浏览器自动分页 -->
-    <div class="print-container" :style="[pageStyles, pagePaddingStyle]">
+    <div class="print-container" :style="[pageStyles, pagePaddingStyle]" v-if="data && data.work_experience">
       <!-- 个人信息 -->
       <div class="personal-info">
-        <h1 class="name">{{ data.basics.name || '姓名未填写' }}</h1>
+        <h1 class="name">{{ data.basics?.name || '姓名未填写' }}</h1>
         <div class="contact-info">
-          <span v-if="data.basics.gender" v-html="formatText(data.basics.gender)"></span>
-          <span v-if="data.basics.gender || data.basics.phone" class="separator">|</span>
-          <span v-if="data.basics.phone" v-html="formatText(data.basics.phone)"></span>
-          <span v-if="(data.basics.gender || data.basics.phone) && data.basics.email" class="separator">|</span>
-          <span v-if="data.basics.email" v-html="formatText(data.basics.email)"></span>
+          <span v-if="data.basics?.gender" v-html="formatText(data.basics.gender)"></span>
+          <span v-if="data.basics?.gender || data.basics?.phone" class="separator">|</span>
+          <span v-if="data.basics?.phone" v-html="formatText(data.basics.phone)"></span>
+          <span v-if="(data.basics?.gender || data.basics?.phone) && data.basics?.email" class="separator">|</span>
+          <span v-if="data.basics?.email" v-html="formatText(data.basics.email)"></span>
         </div>
-        <div v-if="data.basics.target_position" class="target-position">
+        <div v-if="data.basics?.target_position" class="target-position">
           目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
         </div>
       </div>
 
       <!-- 教育经历 -->
-      <template v-if="data.education">
+      <template v-if="data.education && data.education.length">
         <h2 class="section-title">教育经历</h2>
         <div v-for="(item, idx) in data.education" :key="idx" class="education-item">
           <div class="education-header">
@@ -805,7 +814,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 工作经历 -->
-      <template v-if="data.work_experience">
+      <template v-if="data.work_experience && data.work_experience.length">
         <h2 class="section-title">工作经历</h2>
         <div v-for="(item, idx) in data.work_experience" :key="idx" class="work-item">
           <div class="work-header">
@@ -822,7 +831,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 项目经历 -->
-      <template v-if="data.project_experience || data.projects">
+      <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
         <h2 class="section-title">项目经历</h2>
         <div v-for="(item, idx) in (data.project_experience || data.projects)" :key="idx" class="project-item">
           <div class="project-header">
@@ -840,7 +849,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 其他 -->
-      <template v-if="data.others">
+      <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
         <h2 class="section-title">其他</h2>
         <div v-if="data.others.skills?.length" class="cert-lang-line">
           <span class="cert-lang-label">技能：</span>
@@ -863,7 +872,7 @@ const getItemIndex = (type, dataIndex) => {
       </template>
 
       <!-- 自我评价 -->
-      <template v-if="data.self_evaluation">
+      <template v-if="data.self_evaluation && data.self_evaluation.length">
         <h2 class="section-title">自我评价</h2>
         <template v-for="(item, idx) in data.self_evaluation">
           <div v-if="item" :key="'self-eval-'+idx" class="self-eval-item" v-html="formatText(item)"></div>
@@ -892,7 +901,7 @@ const getItemIndex = (type, dataIndex) => {
             </div>
 
             <!-- 教育经历 -->
-            <template v-if="data.education">
+            <template v-if="data.education && data.education.length">
               <h2 v-if="isItemVisible({index: getItemIndex('education-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">教育经历</h2>
               <template v-for="(item, idx) in data.education">
                 <div v-if="isItemVisible({index: getItemIndex('education-item', idx)}, page - 1)" :key="'edu-'+idx" class="education-item" :class="{ 'content-highlight': highlightedModule === 'education' }">
@@ -923,7 +932,7 @@ const getItemIndex = (type, dataIndex) => {
             </template>
 
             <!-- 工作经历 -->
-            <template v-if="data.work_experience">
+            <template v-if="data.work_experience && data.work_experience.length">
               <h2 v-if="isItemVisible({index: getItemIndex('work-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">工作经历</h2>
               <template v-for="(item, idx) in data.work_experience">
                 <div v-if="isItemVisible({index: getItemIndex('work-item', idx)}, page - 1)" :key="'work-'+idx" class="work-item" :class="{ 'content-highlight': highlightedModule === 'work_experience' }">
@@ -945,7 +954,7 @@ const getItemIndex = (type, dataIndex) => {
             </template>
 
             <!-- 项目经历 -->
-            <template v-if="data.project_experience || data.projects">
+            <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
               <h2 v-if="isItemVisible({index: getItemIndex('projects-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">项目经历</h2>
               <template v-for="(item, idx) in (data.project_experience || data.projects)">
                 <div v-if="isItemVisible({index: getItemIndex('project-item', idx)}, page - 1)" :key="'proj-'+idx" class="project-item" :class="{ 'content-highlight': highlightedModule === 'project_experience' }">
@@ -968,7 +977,7 @@ const getItemIndex = (type, dataIndex) => {
             </template>
 
             <!-- 其他 -->
-            <template v-if="data.others">
+            <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
               <h2 v-if="isItemVisible({index: getItemIndex('others-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'others' }" data-module="others">其他</h2>
               <!-- 技能一行显示 -->
               <template v-if="data.others.skills?.length">
@@ -1000,7 +1009,7 @@ const getItemIndex = (type, dataIndex) => {
             </template>
 
             <!-- 自我评价 -->
-            <template v-if="data.self_evaluation">
+            <template v-if="data.self_evaluation && data.self_evaluation.length">
               <h2 v-if="isItemVisible({index: getItemIndex('self-eval-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">自我评价</h2>
               <!-- 每条自我评价独立分页 -->
               <template v-for="(item, idx) in data.self_evaluation">
@@ -1015,11 +1024,20 @@ const getItemIndex = (type, dataIndex) => {
       </div>
     </div>
     <div v-if="pageCount > 1" class="page-indicator">共 {{ pageCount }} 页</div>
-  </div>
+    </div>
+    </template>
 
-  <div v-if="!data" class="no-data">
-    <p>暂无简历数据，请稍后重试</p>
-  </div>
+    <!-- 无简历数据时显示提示 -->
+    <div v-if="!data" class="no-data">
+      <p>暂无简历数据，请先编辑简历</p>
+      <button class="jd-upload-btn" @click="emit('open-resume-edit')" title="编辑简历">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+        <span>编辑简历</span>
+      </button>
+    </div>
   </div>
 
   <!-- 成功提示弹窗 -->
@@ -1049,24 +1067,24 @@ const getItemIndex = (type, dataIndex) => {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: #ffffff;
+  background-color: rgb(249, 245, 242);
   flex-shrink: 0;
 }
 .resume-toolbar {
-  background: #ffffff;
-  padding: 0.75rem 1rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  border: 1px solid #e9ecef;
+  background-color: transparent;
+  padding: 0.5rem 1rem;
+  box-shadow: none;
+  border-bottom: 1px solid #303030;
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.75rem;
   flex-shrink: 0;
 }
 .toolbar-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #333;
+  color: #303030;
   width: 24px;
   height: 24px;
   flex-shrink: 0;
@@ -1074,13 +1092,13 @@ const getItemIndex = (type, dataIndex) => {
 .toolbar-controls-container {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
+  gap: 1rem;
   flex-shrink: 0;
 }
 .toolbar-section {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0;
   position: relative;
   flex-shrink: 0;
   z-index: 1;
@@ -1096,41 +1114,51 @@ const getItemIndex = (type, dataIndex) => {
   gap: 0.5rem;
 }
 .toolbar-title {
-  font-size: 0.8rem;
-  font-weight: 500;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 400;
   margin: 0;
-  color: #495057;
+  color: #303030;
   white-space: nowrap;
   cursor: pointer;
   padding: 0.4rem 0.8rem;
-  border-radius: 6px;
-  background: #f8f9fa;
-  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  border: 1px solid #303030;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  transition: all 0.2s ease;
 }
 .toolbar-title:hover {
-  background: #e9ecef;
-  border-color: #dee2e6;
+  background: #303030;
+  color: #f8bebe;
 }
 .toolbar-controls {
-  display: none;
+  visibility: hidden;
+  opacity: 0;
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  background: #ffffff;
-  border: 1px solid #e9ecef;
-  border-radius: 8px;
+  background-color: #f9f5f0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  border: 1px solid #303030;
+  border-radius: 0;
   padding: 1rem;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: 4px 4px 0 #303030;
   gap: 0.8rem;
   flex-direction: column;
   z-index: 10000;
   min-width: 220px;
   white-space: nowrap;
+  transition: visibility 0s linear 0.15s, opacity 0.15s ease;
 }
 .toolbar-section:hover > .toolbar-controls,
 .toolbar-section:hover > .toolbar-title,
 .toolbar-controls:hover {
-  display: flex;
+  visibility: visible;
+  opacity: 1;
+  transition: visibility 0s linear 0s, opacity 0.15s ease;
 }
 .control-item {
   display: flex;
@@ -1139,81 +1167,94 @@ const getItemIndex = (type, dataIndex) => {
   justify-content: space-between;
 }
 .control-label {
-  font-size: 0.75rem;
-  color: #6c757d;
-  font-weight: 500;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  color: #303030;
+  font-weight: 400;
   white-space: nowrap;
-  min-width: 60px;
+  width: 90px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 .slider {
   -webkit-appearance: none;
   width: 120px;
-  height: 5px;
-  border-radius: 4px;
-  background: linear-gradient(to right, #333 0%, #333 50%, #e9ecef 50%, #e9ecef 100%);
+  height: 4px;
+  border-radius: 0;
+  background: #e0e0e0;
   outline: none;
 }
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #333;
+  width: 14px;
+  height: 14px;
+  border-radius: 0;
+  background: #303030;
   cursor: pointer;
-  border: 3px solid #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  border: none;
+  box-shadow: none;
 }
 .slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #333;
+  width: 14px;
+  height: 14px;
+  border-radius: 0;
+  background: #303030;
   cursor: pointer;
-  border: 3px solid #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  border: none;
+  box-shadow: none;
 }
 .export-btn {
-  background: #333;
-  color: white;
-  border: none;
-  padding: 0.5rem 1.2rem;
-  font-size: 0.8rem;
-  font-weight: 500;
-  border-radius: 6px;
+  background: #f8bebe;
+  color: #303030;
+  border: 1px solid #303030;
+  padding: 0.5rem 1rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  border-radius: 0;
   cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  box-shadow: 2px 2px 0 #303030;
 }
 .export-btn:hover {
-  background: #555;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  background: #303030;
+  color: #f8bebe;
+  box-shadow: none;
+  transform: translate(2px, 2px);
 }
 .export-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
-  transform: none;
   box-shadow: none;
+  transform: none;
 }
 /* JD上传按钮 */
 .jd-upload-btn {
-  background: #fff;
-  color: #333;
-  border: 1px solid #ddd;
+  background: transparent;
+  color: #303030;
+  border: 1px solid #303030;
   padding: 0.4rem 0.8rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  border-radius: 6px;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  border-radius: 0;
   cursor: pointer;
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
   gap: 0.3rem;
   position: relative;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 .jd-upload-btn:hover {
-  background: #f5f5f5;
-  border-color: #ccc;
+  background: #f8bebe;
+  border-color: #303030;
 }
 .red-dot {
   position: absolute;
@@ -1228,11 +1269,11 @@ const getItemIndex = (type, dataIndex) => {
 /* Spinner 转圈圈 */
 .spinner {
   display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 50%;
-  border-top-color: white;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(48, 48, 48, 0.3);
+  border-radius: 0;
+  border-top-color: #303030;
   animation: spin 0.8s linear infinite;
   margin-right: 6px;
   vertical-align: middle;
@@ -1246,7 +1287,7 @@ const getItemIndex = (type, dataIndex) => {
   flex-direction: column;
   align-items: center;
   padding: 20px;
-  background: #f5f5f5;
+  background: rgb(254, 253, 251);
   width: 100%;
   box-sizing: border-box;
   overflow-y: auto;
@@ -1277,7 +1318,7 @@ const getItemIndex = (type, dataIndex) => {
 }
 .a4-page {
   background: white;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   position: relative;
   box-sizing: border-box;
   flex-shrink: 0;
@@ -1506,10 +1547,18 @@ const getItemIndex = (type, dataIndex) => {
   z-index: 100;
 }
 .no-data {
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding: 3rem 1rem;
   color: #6c757d;
   font-size: 1.1rem;
+  gap: 1rem;
+}
+
+.no-data .jd-upload-btn {
+  margin-top: 0.5rem;
 }
 
 /* 成功提示弹窗 */

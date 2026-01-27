@@ -1,0 +1,27 @@
+# Python virtual environment
+.venv/
+
+# Database files
+data/*.db
+data/deepagents.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Node.js
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
