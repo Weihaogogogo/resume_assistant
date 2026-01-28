@@ -1,9 +1,20 @@
 <script setup>
-import { ref, onMounted, watch, nextTick, computed } from 'vue'
+import { ref, onMounted, watch, nextTick, computed, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import RichTextEditor from './components/RichTextEditor.vue'
+import MobileTabBar from './components/MobileTabBar.vue'
+
+// 响应式布局状态
+const isMobileView = ref(false)
+const currentTab = ref('chat')
+let resizeObserver = null
+
+// 检测是否为移动端视图
+function checkMobileView() {
+  isMobileView.value = window.innerWidth < 1200
+}
 
 // Tooltip 状态管理
 const tooltipState = ref({ visible: false, text: '', x: 0, bottom: 0 })
@@ -213,6 +224,32 @@ onMounted(async () => {
       role: 'assistant',
       content: '抱歉，加载简历失败。请确保MCP服务已启动。'
     })
+  }
+})
+
+// 初始化响应式检测
+onMounted(() => {
+  // 初始检测
+  checkMobileView()
+  
+  // 使用 ResizeObserver 监听窗口大小变化
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      checkMobileView()
+    })
+    resizeObserver.observe(document.body)
+  } else {
+    // 降级方案：使用 window resize 事件
+    window.addEventListener('resize', checkMobileView)
+  }
+})
+
+// 清理监听器
+onUnmounted(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+  } else {
+    window.removeEventListener('resize', checkMobileView)
   }
 })
 
@@ -1441,7 +1478,9 @@ watch(
 
     <!-- 已登录且非管理页面：显示主内容（聊天界面） -->
     <div v-if="isLoggedIn && !isAdminRoute" class="main-content">
-      <!-- 左侧聊天区 -->
+      <!-- 桌面端：并排显示 -->
+      <template v-if="!isMobileView">
+        <!-- 左侧聊天区 -->
       <div class="chat-section">
         <div class="chat-container">
           <div class="messages-container" ref="messagesContainer">
@@ -1562,6 +1601,80 @@ watch(
           <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
         </div>
       </div>
+      </template>
+
+      <!-- 移动端：Tab 切换显示 -->
+      <template v-else>
+        <!-- 聊天 Tab 内容 -->
+        <Transition name="tab-content" mode="out-in">
+          <div v-if="currentTab === 'chat'" class="mobile-chat-view" key="chat">
+            <div class="chat-container">
+              <div class="messages-container" ref="messagesContainer">
+                <ChatMessage
+                  v-for="message in messages"
+                  :key="message.id + '_' + (message.content?.length || 0)"
+                  :message="message"
+                  @optionClick="handleOptionClick"
+                />
+                <div v-if="isLoading" class="loading-indicator">
+                  <div class="loading-spinner">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="32" stroke-dashoffset="10" opacity="0.3"/>
+                      <path d="M10 3 A 7 7 0 0 1 10 17 A 7 7 0 0 1 10 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="loading-text">{{ loadingText }}</span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 悬浮输入容器 -->
+            <div class="floating-input-container mobile-input">
+              <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+                <div v-for="file in uploadedFiles" :key="file.id" class="file-thumbnail">
+                  <div v-if="file.type.startsWith('image/')" class="file-icon image-icon" :style="{ cursor: 'pointer' }" @click="openImagePreview(file)">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                  </div>
+                  <div v-else-if="file.type === 'application/pdf'" class="file-icon pdf-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                  </div>
+                  <div class="file-name">{{ file.name }}</div>
+                  <div @click="deleteFile(file.id)" class="delete-file-btn">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="input-wrapper">
+                <input type="file" ref="fileInput" multiple accept="image/png, image/jpeg, image/jpg, application/pdf" @change="handleFileSelect" style="display: none;" />
+                <div class="textarea-container">
+                  <textarea v-model="userInput" @keydown="handleKeyDown" @paste="handlePaste" placeholder="输入你的问题或请求..." rows="1" :disabled="isLoading || isResponding"></textarea>
+                  <div class="toolbar mobile-toolbar">
+                    <button @click="fileInput?.click()" class="icon-btn" :disabled="isLoading || isResponding">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    </button>
+                    <button @click="openFullscreenDialog" class="icon-btn" :disabled="isLoading || isResponding">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+                    </button>
+                    <div class="send-btn-placeholder" v-if="!(userInput.trim() || uploadedFiles.length > 0)"></div>
+                    <button v-if="userInput.trim() || uploadedFiles.length > 0" @click="sendMessage" class="icon-btn send-btn" :disabled="isLoading || isResponding">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 简历 Tab 内容 -->
+          <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" key="resume">
+            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
+          </div>
+        </Transition>
+
+        <!-- 移动端底部 Tab 栏 -->
+        <MobileTabBar :active-tab="currentTab" @update:activeTab="currentTab = $event" />
+      </template>
     </div> <!-- 闭合 v-else main-content -->
   </div>
 
@@ -3859,5 +3972,205 @@ watch(
   min-height: 100px;
   max-height: 200px;
   font-size: 0.85rem;
+}
+
+/* ==================== 移动端响应式布局 ==================== */
+@media (max-width: 1199px) {
+  /* 主内容区域 */
+  .main-content {
+    flex-direction: column;
+    height: calc(100vh - 48px);
+    overflow: hidden;
+  }
+
+  .chat-section,
+  .resume-section {
+    flex: none;
+    width: 100%;
+    height: 100%;
+    border-right: none;
+  }
+
+  /* 移动端聊天视图 */
+  .mobile-chat-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    background-color: rgb(254, 253, 251); /* 与PC端聊天区域背景色一致 */
+    padding-bottom: 60px; /* 为底部导航栏留出空间 */
+  }
+
+  .mobile-chat-view .chat-container {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-chat-view .messages-container {
+    flex: 1;
+    padding: 1rem;
+    font-size: 14px;
+  }
+
+  /* 移动端输入区域 */
+  .floating-input-container.mobile-input {
+    padding: 12px 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0));
+    background: #f9f5f0;
+    border-top: 1px solid #e0e0e0;
+    flex-shrink: 0;
+  }
+
+  .mobile-input .textarea-container {
+    background-color: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+  }
+
+  .mobile-input .textarea-container textarea {
+    min-height: 48px;
+    padding: 14px;
+    font-size: 16px;
+  }
+
+  .mobile-toolbar {
+    height: 52px;
+    padding: 0 4px;
+  }
+
+  .mobile-toolbar .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .mobile-toolbar .send-btn-placeholder {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* 移动端简历视图 */
+  .mobile-resume-view {
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 60px; /* 为底部导航栏留出空间 */
+  }
+
+  /* 移动端设置视图 */
+  .mobile-settings-view {
+    padding: 2rem 1.5rem;
+    overflow-y: auto;
+  }
+
+  .settings-content {
+    max-width: 400px;
+    margin: 0 auto;
+  }
+
+  .settings-content h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1.5rem;
+    font-weight: 600;
+  }
+
+  .settings-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 0;
+    border-bottom: 1px solid #e0e0e0;
+  }
+
+  .settings-value {
+    color: #666;
+    font-size: 0.875rem;
+  }
+
+  .settings-logout {
+    width: 100%;
+    margin-top: 2rem;
+    padding: 0.875rem;
+    font-size: 0.875rem;
+  }
+
+  /* Tab 内容切换动画 */
+  .tab-content-enter-active,
+  .tab-content-leave-active {
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .tab-content-enter-from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+
+  .tab-content-leave-to {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+
+  .tab-content-enter-to,
+  .tab-content-leave-from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  /* 上传文件区域适配 */
+  .uploaded-files {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .file-thumbnail {
+    padding: 6px;
+  }
+
+  .file-name {
+    font-size: 11px;
+    max-width: 80px;
+  }
+}
+
+/* 小屏幕适配 */
+@media (max-width: 480px) {
+  .mobile-tab-bar {
+    height: 56px;
+  }
+
+  .mobile-tab-label {
+    font-size: 10px;
+  }
+
+  .mobile-tab-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .floating-input-container.mobile-input {
+    padding: 10px 12px;
+  }
+
+  .mobile-input .textarea-container textarea {
+    padding: 12px;
+    font-size: 15px;
+  }
+
+  .mobile-toolbar .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .mobile-toolbar .send-btn-placeholder {
+    width: 40px;
+    height: 40px;
+  }
+
+  .messages-container {
+    padding: 0.75rem;
+    font-size: 13px;
+  }
 }
 </style>

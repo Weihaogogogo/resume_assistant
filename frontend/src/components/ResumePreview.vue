@@ -18,10 +18,19 @@ const props = defineProps({
     type: Object,
     required: false,
     default: null
+  },
+  // 是否为移动端视图（由父组件传入）
+  isMobileView: {
+    type: Boolean,
+    required: false,
+    default: false
   }
 })
 
 const emit = defineEmits(['open-jd-dialog', 'open-resume-edit'])
+
+// 检测是否为移动端视图
+const isMobile = computed(() => props.isMobileView || window.innerWidth < 1200)
 
 // ========== 样式控制变量 ==========
 const marginVertical = ref(9)
@@ -29,6 +38,13 @@ const marginHorizontal = ref(9)
 const moduleMargin = ref(1)
 const lineHeight = ref(1.6)
 const fontSize = ref(11)
+
+// 移动端样式面板展开状态
+const isStylePanelExpanded = ref(false)
+
+function toggleStylePanel() {
+  isStylePanelExpanded.value = !isStylePanelExpanded.value
+}
 
 // A4尺寸（像素，96dpi）
 const PAGE_WIDTH = 794
@@ -550,80 +566,152 @@ const getItemIndex = (type, dataIndex) => {
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
           </svg>
         </div>
-        <div class="toolbar-controls-container">
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">页边距</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">上下: {{ marginVertical }}rem</label>
-                <input type="range" v-model.number="marginVertical" min="3" max="12" step="0.25" class="slider">
+        
+        <!-- 移动端：可展开的样式调整面板 -->
+        <template v-if="isMobile">
+          <div class="mobile-toolbar-row">
+            <button class="mobile-style-btn" @click="toggleStylePanel" :class="{ active: isStylePanelExpanded }">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              <span>{{ isStylePanelExpanded ? '收起' : '调整样式' }}</span>
+            </button>
+            
+            <!-- 移动端操作按钮 - 始终显示 -->
+            <button class="mobile-jd-btn" @click="emit('open-resume-edit')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span>编辑简历</span>
+            </button>
+            <button class="mobile-jd-btn" @click="emit('open-jd-dialog')">
+              <span v-if="!jdData" class="red-dot"></span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+              <span>目标岗位</span>
+            </button>
+            <button class="mobile-export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
+              <span v-if="isExportingPDF" class="spinner"></span>
+              <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
+            </button>
+          </div>
+          
+          <!-- 可展开的样式控制面板 -->
+          <Transition name="slide-down">
+            <div v-if="isStylePanelExpanded" class="style-panel-mobile">
+              <div class="style-control-row">
+                <div class="style-control-item">
+                  <label class="style-label">上下边距: {{ marginVertical }}rem</label>
+                  <input type="range" v-model.number="marginVertical" min="3" max="12" step="0.25" class="slider">
+                </div>
+                <div class="style-control-item">
+                  <label class="style-label">左右边距: {{ marginHorizontal }}rem</label>
+                  <input type="range" v-model.number="marginHorizontal" min="3" max="12" step="0.25" class="slider">
+                </div>
               </div>
-              <div class="control-item">
-                <label class="control-label">左右: {{ marginHorizontal }}rem</label>
-                <input type="range" v-model.number="marginHorizontal" min="3" max="12" step="0.25" class="slider">
+              <div class="style-control-row">
+                <div class="style-control-item">
+                  <label class="style-label">模块间距: {{ moduleMargin }}rem</label>
+                  <input type="range" v-model.number="moduleMargin" min="0.25" max="2" step="0.25" class="slider">
+                </div>
+                <div class="style-control-item">
+                  <label class="style-label">行间距: {{ lineHeight }}</label>
+                  <input type="range" v-model.number="lineHeight" min="1.1" max="2.2" step="0.1" class="slider">
+                </div>
+              </div>
+              <div class="style-control-row single">
+                <div class="style-control-item">
+                  <label class="style-label">字体大小: {{ fontSize }}pt</label>
+                  <input type="range" v-model.number="fontSize" min="9" max="14" step="0.5" class="slider">
+                </div>
+              </div>
+            </div>
+          </Transition>
+        </template>
+        
+        <!-- PC端：原有的工具栏 -->
+        <template v-else>
+          <div class="toolbar-controls-container">
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">页边距</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">上下: {{ marginVertical }}rem</label>
+                  <input type="range" v-model.number="marginVertical" min="3" max="12" step="0.25" class="slider">
+                </div>
+                <div class="control-item">
+                  <label class="control-label">左右: {{ marginHorizontal }}rem</label>
+                  <input type="range" v-model.number="marginHorizontal" min="3" max="12" step="0.25" class="slider">
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">模块边距</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">间距: {{ moduleMargin }}rem</label>
+                  <input type="range" v-model.number="moduleMargin" min="0.25" max="2" step="0.25" class="slider">
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">行间距</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">行距: {{ lineHeight }}</label>
+                  <input type="range" v-model.number="lineHeight" min="1.1" max="2.2" step="0.1" class="slider">
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">字体大小</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">大小: {{ fontSize }}pt</label>
+                  <input type="range" v-model.number="fontSize" min="9" max="14" step="0.5" class="slider">
+                </div>
               </div>
             </div>
           </div>
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">模块边距</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">间距: {{ moduleMargin }}rem</label>
-                <input type="range" v-model.number="moduleMargin" min="0.25" max="2" step="0.25" class="slider">
-              </div>
-            </div>
+          <div class="toolbar-section toolbar-actions">
+            <button
+              class="jd-upload-btn"
+              @click="emit('open-resume-edit')"
+              title="编辑简历"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span>编辑简历</span>
+            </button>
+            <button
+              class="jd-upload-btn"
+              @click="emit('open-jd-dialog')"
+              title="上传目标岗位信息"
+            >
+              <span v-if="!jdData" class="red-dot"></span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+              <span>目标岗位</span>
+            </button>
+            <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
+              <span v-if="isExportingPDF" class="spinner"></span>
+              <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
+            </button>
           </div>
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">行间距</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">行距: {{ lineHeight }}</label>
-                <input type="range" v-model.number="lineHeight" min="1.1" max="2.2" step="0.1" class="slider">
-              </div>
-            </div>
-          </div>
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">字体大小</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">大小: {{ fontSize }}pt</label>
-                <input type="range" v-model.number="fontSize" min="9" max="14" step="0.5" class="slider">
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="toolbar-section toolbar-actions">
-          <button
-            class="jd-upload-btn"
-            @click="emit('open-resume-edit')"
-            title="编辑简历"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-            <span>编辑简历</span>
-          </button>
-          <button
-            class="jd-upload-btn"
-            @click="emit('open-jd-dialog')"
-            title="上传目标岗位信息"
-          >
-            <span v-if="!jdData" class="red-dot"></span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-              <polyline points="14 2 14 8 20 8"></polyline>
-              <line x1="16" y1="13" x2="8" y2="13"></line>
-              <line x1="16" y1="17" x2="8" y2="17"></line>
-              <polyline points="10 9 9 9 8 9"></polyline>
-            </svg>
-            <span>目标岗位</span>
-          </button>
-          <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
-            <span v-if="isExportingPDF" class="spinner"></span>
-            <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
-          </button>
-        </div>
+        </template>
       </div>
     </div>
 
@@ -1534,17 +1622,15 @@ const getItemIndex = (type, dataIndex) => {
   font-size: 10pt;
   color: #6c757d;
 }
-.page-indicator {
-  background: rgba(0, 0, 0, 0.7);
-  color: white;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 14px;
-  font-weight: 500;
-  position: fixed;
-  bottom: 30px;
-  right: 30px;
-  z-index: 100;
+/* PC端页面指示器 - 保持原来的定位方式 */
+@media (min-width: 1200px) {
+  .page-indicator {
+    position: absolute;
+    right: 20px;
+    bottom: 30px;
+    color: #6c757d;
+    font-size: 12px;
+  }
 }
 .no-data {
   display: flex;
@@ -1777,6 +1863,308 @@ const getItemIndex = (type, dataIndex) => {
   }
   75% {
     background-color: rgba(6, 182, 212, 0.1);
+  }
+}
+
+/* ==================== 移动端适配（0-1200px统一使用移动端样式） ==================== */
+@media (max-width: 1200px) {
+  .resume-wrapper {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 移动端工具栏固定在底部 Tab 栏上方 */
+  .resume-toolbar-wrapper {
+    position: fixed;
+    bottom: 60px;
+    top: auto;
+    left: 0;
+    right: 0;
+    z-index: 999;
+    background-color: rgb(249, 245, 242);
+    border-top: 1px solid #e0e0e0;
+    border-bottom: none;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+  }
+
+  /* 当样式面板展开时，工具栏高度增加 */
+  .resume-toolbar-wrapper:has(.style-panel-mobile) {
+    bottom: 60px;
+  }
+
+  .resume-toolbar {
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    gap: 6px;
+    border-bottom: none;
+  }
+
+  /* 移动端隐藏 toolbar-icon */
+  .toolbar-icon {
+    display: none !important;
+  }
+
+  /* 移动端红点位置调整 */
+  .mobile-jd-btn .red-dot {
+    top: -2px;
+    right: -2px;
+    width: 6px;
+    height: 6px;
+  }
+
+  .toolbar-controls-container {
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .toolbar-title {
+    padding: 5px 8px;
+    font-size: 10px;
+  }
+
+  .toolbar-actions {
+    gap: 6px;
+  }
+
+  .jd-upload-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+  }
+
+  .export-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+  }
+
+  /* 预览内容区域适配 */
+  .preview-content {
+    padding: 8px;
+    flex: 1;
+    overflow-y: auto;
+    height: calc(100% - 60px);
+    box-sizing: border-box;
+  }
+
+  /* 移动端页面指示器 */
+  .page-indicator {
+    position: fixed;
+    bottom: 80px;
+    right: 12px;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1;
+    z-index: 1001;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    white-space: nowrap;
+  }
+
+  /* 移动端样式面板 */
+  .style-panel-mobile {
+    width: 100%;
+    background: rgb(254, 253, 251);
+    padding: 12px;
+    border-top: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .style-control-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .style-control-row.single {
+    justify-content: center;
+  }
+
+  .style-control-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .style-label {
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .style-panel-mobile .slider {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e0e0e0;
+    outline: none;
+    border-radius: 2px;
+  }
+
+  .style-panel-mobile .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #303030;
+    cursor: pointer;
+    border-radius: 0;
+  }
+
+  .style-panel-mobile .slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: #303030;
+    cursor: pointer;
+    border-radius: 0;
+    border: none;
+  }
+
+  /* 移动端工具栏第一行 - 始终显示的按钮 */
+  .mobile-toolbar-row {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
+  }
+
+  /* 移动端样式调整按钮 */
+  .mobile-style-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 6px;
+    background: transparent;
+    border: 1px solid #303030;
+    border-radius: 0;
+    color: #303030;
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 0 #303030;
+    white-space: nowrap;
+  }
+
+  .mobile-style-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+
+  .mobile-style-btn.active {
+    background: #f8bebe;
+  }
+
+  /* 移动端JD按钮 - 跟PC端样式一致 */
+  .mobile-jd-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 6px;
+    background: transparent;
+    color: #303030;
+    border: 1px solid #303030;
+    border-radius: 0;
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 0 #303030;
+    white-space: nowrap;
+  }
+
+  .mobile-jd-btn:hover {
+    background: #f8bebe;
+    border-color: #303030;
+  }
+
+  .mobile-jd-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+
+  /* 移动端导出按钮 */
+  .mobile-export-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 6px;
+    background: #f8bebe;
+    color: #303030;
+    border: 1px solid #303030;
+    border-radius: 0;
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 0 #303030;
+    white-space: nowrap;
+  }
+
+  .mobile-export-btn:hover:not(:disabled) {
+    background: #303030;
+    color: #f8bebe;
+  }
+
+  .mobile-export-btn:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+
+  .mobile-export-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .mobile-jd-btn .spinner,
+  .mobile-export-btn .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(48, 48, 48, 0.3);
+    border-top-color: #303030;
+    border-radius: 0;
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* 展开收起动画 */
+  .slide-down-enter-active,
+  .slide-down-leave-active {
+    transition: all 0.3s ease;
+    overflow: hidden;
+  }
+
+  .slide-down-enter-from,
+  .slide-down-leave-to {
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .slide-down-enter-to,
+  .slide-down-leave-from {
+    opacity: 1;
+    max-height: 300px;
   }
 }
 </style>
