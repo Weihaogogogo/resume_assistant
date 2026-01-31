@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     shared-mime-info \
     curl \
+    # 安装中文字体（解决 PDF 中文乱码问题）
+    fonts-noto-cjk \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
