@@ -97,13 +97,15 @@ const newSkill = ref('') // 用于添加技能标签
 // 简历编辑弹窗状态（新增）
 const isResumeEditDialogOpen = ref(false)
 const resumeFormData = ref({
-  basics: { name: '', gender: '', phone: '', email: '', target_position: '' },
+  basics: { name: '', gender: '', phone: '', email: '', target_position: '', photo: '' },
   education: [],
   work_experience: [],
   project_experience: [],
   others: { skills: [], certificates: [], languages: [] },
   self_evaluation: []
 })
+// 简历照片错误信息
+const photoError = ref('')
 // 标签输入
 const newResumeSkill = ref('')
 const newResumeCert = ref('')
@@ -1022,6 +1024,101 @@ function convertDateRangeToSave(item) {
 // 关闭简历编辑弹窗
 function closeResumeEditDialog() {
   isResumeEditDialogOpen.value = false
+  photoError.value = ''
+}
+
+// 处理证件照上传
+function handlePhotoUpload(event) {
+  const file = event.target.files[0]
+  photoError.value = ''
+  
+  if (!file) return
+  
+  // 1. 验证文件类型
+  if (!file.type.startsWith('image/')) {
+    photoError.value = '请选择图片文件（jpg、png 等）'
+    return
+  }
+  
+  // 2. 验证文件大小（限制 2MB）
+  if (file.size > 2 * 1024 * 1024) {
+    photoError.value = '照片大小不能超过 2MB，请选择更小的图片'
+    event.target.value = ''
+    return
+  }
+  
+  // 3. 读取并验证图片尺寸
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const img = new Image()
+    img.onload = () => {
+      const width = img.width
+      const height = img.height
+      
+      // 1寸照片比例约 3:3.5，允许误差 ±20%
+      const ratio = width / height
+      const targetRatio = 3 / 3.5  // 约 0.857
+      const minRatio = targetRatio * 0.8
+      const maxRatio = targetRatio * 1.2
+      
+      // 像素尺寸限制
+      const minPixels = 200
+      
+      if (width < minPixels || height < minPixels) {
+        photoError.value = `照片像素太低，请选择至少 ${minPixels}x${minPixels} 像素的图片`
+        return
+      }
+      
+      // 比例提示（非强制）
+      if (ratio < minRatio || ratio > maxRatio) {
+        console.warn('照片比例偏离 1 寸标准')
+      }
+      
+      // 4. 压缩图片
+      compressAndSave(img)
+    }
+    img.src = e.target.result
+  }
+  reader.readAsDataURL(file)
+}
+
+// 压缩并保存图片
+function compressAndSave(img) {
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')
+  
+  // 限制最大尺寸
+  const MAX_SIZE = 400
+  let width = img.width
+  let height = img.height
+  
+  if (width > height) {
+    if (width > MAX_SIZE) {
+      height = height * (MAX_SIZE / width)
+      width = MAX_SIZE
+    }
+  } else {
+    if (height > MAX_SIZE) {
+      width = width * (MAX_SIZE / height)
+      height = MAX_SIZE
+    }
+  }
+  
+  canvas.width = width
+  canvas.height = height
+  ctx.drawImage(img, 0, 0, width, height)
+  
+  // 转换为 Base64（质量 0.8）
+  resumeFormData.value.basics.photo = canvas.toDataURL('image/jpeg', 0.8)
+}
+
+// 删除证件照
+function removePhoto() {
+  resumeFormData.value.basics.photo = ''
+  photoError.value = ''
+  // 清空文件输入
+  const input = document.querySelector('.photo-input')
+  if (input) input.value = ''
 }
 
 // 添加学历
@@ -1905,6 +2002,32 @@ watch(
           <div class="resume-form-section">
             <!-- 基本信息 -->
             <h4 class="section-title">基本信息</h4>
+            
+            <!-- 证件照上传 -->
+            <div class="field-group photo-upload-group">
+              <label>证件照</label>
+              <div class="photo-upload-area" :class="{ 'has-error': photoError }">
+                <img v-if="resumeFormData.basics.photo" :src="resumeFormData.basics.photo" class="photo-preview" />
+                <div v-else class="photo-placeholder" @click="$refs.photoInput.click()">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                  <span>点击上传证件照</span>
+                  <small>（1寸照片，不超过2MB）</small>
+                </div>
+                <input 
+                  ref="photoInput"
+                  type="file" 
+                  accept="image/jpeg,image/png"
+                  @change="handlePhotoUpload"
+                  class="photo-input" 
+                />
+                <button v-if="resumeFormData.basics.photo" @click="removePhoto" class="remove-photo-btn">×</button>
+              </div>
+              <div v-if="photoError" class="photo-error">{{ photoError }}</div>
+            </div>
+            
             <div class="form-grid">
               <div class="field-group">
                 <label>姓名</label>
@@ -3407,6 +3530,103 @@ watch(
 
 .tags-input .tag-remove:hover {
   color: var(--error-color);
+}
+
+/* 证件照上传样式 */
+.photo-upload-group {
+  grid-column: 1 / -1;
+  margin-bottom: 1rem;
+}
+
+.photo-upload-area {
+  width: 80px;
+  height: 100px;
+  border: 2px dashed #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.photo-upload-area:hover {
+  border-color: #999;
+  background-color: #f5f5f5;
+}
+
+.photo-upload-area.has-error {
+  border-color: #dc3545;
+}
+
+.photo-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #999;
+  font-size: 10px;
+  text-align: center;
+  padding: 6px;
+}
+
+.photo-placeholder svg {
+  width: 24px;
+  height: 24px;
+  color: #ccc;
+}
+
+.photo-placeholder small {
+  display: none;
+}
+
+.photo-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photo-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.remove-photo-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.6);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.2s ease;
+  padding: 0;
+}
+
+.remove-photo-btn:hover {
+  background: rgba(0,0,0,0.7);
+}
+
+.photo-error {
+  color: #dc3545;
+  font-size: 12px;
+  margin-top: 4px;
 }
 
 .tags-input .tag-input {

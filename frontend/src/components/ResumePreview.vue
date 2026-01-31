@@ -723,6 +723,10 @@ const getItemIndex = (type, dataIndex) => {
       <div ref="contentRef" class="content-source" :style="[pageStyles, pagePaddingStyle]">
       <!-- 个人信息 -->
       <div v-if="data.basics" class="pageable-item personal-info" :class="{ 'module-highlight': highlightedModule === 'basics' }" data-module="basics">
+        <!-- 证件照绝对定位（不参与居中计算） -->
+        <div v-if="data.basics.photo" class="photo-container">
+          <img :src="data.basics.photo" class="profile-photo" alt="证件照" />
+        </div>
         <h1 class="name">{{ data.basics.name || '姓名未填写' }}</h1>
         <div class="contact-info">
           <span v-if="data.basics?.gender" v-html="formatText(data.basics.gender)"></span>
@@ -861,6 +865,9 @@ const getItemIndex = (type, dataIndex) => {
     <div class="print-container" :style="[pageStyles, pagePaddingStyle]" v-if="data && data.work_experience">
       <!-- 个人信息 -->
       <div class="personal-info">
+        <div v-if="data.basics?.photo" class="photo-container">
+          <img :src="data.basics.photo" class="profile-photo" alt="证件照" />
+        </div>
         <h1 class="name">{{ data.basics?.name || '姓名未填写' }}</h1>
         <div class="contact-info">
           <span v-if="data.basics?.gender" v-html="formatText(data.basics.gender)"></span>
@@ -975,6 +982,9 @@ const getItemIndex = (type, dataIndex) => {
           <div class="page-content" :style="pageStyles">
             <!-- 个人信息 -->
             <div v-if="data.basics && isItemVisible({index: getItemIndex('basics', 0)}, page - 1)" class="personal-info" :class="{ 'module-highlight': highlightedModule === 'basics' }" data-module="basics">
+              <div v-if="data.basics.photo" class="photo-container">
+                <img :src="data.basics.photo" class="profile-photo" alt="证件照" />
+              </div>
               <h1 class="name">{{ data.basics.name || '姓名未填写' }}</h1>
               <div class="contact-info">
                 <span v-if="data.basics.gender" v-html="formatText(data.basics.gender)"></span>
@@ -1435,14 +1445,17 @@ const getItemIndex = (type, dataIndex) => {
 }
 .personal-info {
   text-align: center;
-  margin-bottom: var(--module-margin);
+  position: relative;
+  min-height: 110px;
 }
-.name {
+
+.personal-info .name {
   font-size: 1.5em;
   font-weight: 700;
   margin: 0 0 0.25em 0;
   color: #212529;
 }
+
 .contact-info {
   display: flex;
   justify-content: center;
@@ -1450,16 +1463,29 @@ const getItemIndex = (type, dataIndex) => {
   flex-wrap: wrap;
   font-size: 0.8em;
   color: #6c757d;
-  margin-bottom: 0.25em;
 }
-.separator {
-  color: #6c757d;
+
+.photo-container {
+  position: absolute;
+  top: 0;
+  right: 0;
 }
+
+.profile-photo {
+  width: 80px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
 .target-position {
   font-size: 0.8em;
   color: #212529;
   font-weight: 600;
+  margin-top: 0.25em;
 }
+
 .section-title {
   font-size: 1.1em;
   font-weight: 600;

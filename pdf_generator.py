@@ -43,22 +43,33 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
     if resume_data.get("basics"):
         basics = resume_data["basics"]
         html_parts.append('<div class="personal-info">')
+        
+        # 证件照使用绝对定位（不参与居中计算）
+        if basics.get("photo"):
+            html_parts.append(f'<img src="{basics["photo"]}" class="profile-photo" alt="证件照" />')
+        
+        # 姓名
         html_parts.append(f'<h1 class="name">{basics.get("name", "姓名未填写")}</h1>')
+        
+        # 联系信息
         html_parts.append('<div class="contact-info">')
-
         if basics.get("gender"):
             html_parts.append(f'<span>{basics["gender"]}</span>')
-            html_parts.append('<span class="separator">|</span>')
         if basics.get("phone"):
+            if basics.get("gender"):
+                html_parts.append('<span class="separator">|</span>')
             html_parts.append(f'<span>{basics["phone"]}</span>')
-            html_parts.append('<span class="separator">|</span>')
         if basics.get("email"):
+            if basics.get("gender") or basics.get("phone"):
+                html_parts.append('<span class="separator">|</span>')
             html_parts.append(f'<span>{basics["email"]}</span>')
-
-        html_parts.append('</div>')
+        html_parts.append('</div>')  # contact-info
+        
+        # 目标岗位
         if basics.get("target_position"):
             html_parts.append(f'<div class="target-position">目标岗位：{basics["target_position"]}</div>')
-        html_parts.append('</div>')
+        
+        html_parts.append('</div>')  # personal-info
 
     # 教育经历
     if resume_data.get("education") and len(resume_data["education"]) > 0:
@@ -287,10 +298,11 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
 
     .personal-info {{
         text-align: center;
-        margin-bottom: var(--module-margin);
+        position: relative;
+        min-height: 2.8cm;
     }}
 
-    .name {{
+    .personal-info .name {{
         font-size: 1.5em;
         font-weight: 700;
         margin: 0 0 0.25em 0;
@@ -304,17 +316,28 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
         flex-wrap: wrap;
         font-size: 0.8em;
         color: #6c757d;
-        margin-bottom: 0.25em;
     }}
 
     .separator {{
         color: #6c757d;
     }}
 
+    .profile-photo {{
+        width: 2.1cm;
+        height: 2.6cm;
+        object-fit: cover;
+        border: 1px solid #ddd;
+        border-radius: 2px;
+        position: absolute;
+        top: 0;
+        right: 0;
+    }}
+
     .target-position {{
         font-size: 0.8em;
         color: #212529;
         font-weight: 600;
+        margin-top: 0.25em;
     }}
 
     .section {{
