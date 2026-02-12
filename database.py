@@ -66,6 +66,7 @@ class Conversation(Base):
     session_id = Column(String(36), nullable=False)
     messages = Column(JSON, default=list)  # 完整的聊天历史
     compressed_context = Column(JSON, default=list)  # 压缩后的上下文（用于性能）
+    pending_confirmation = Column(JSON, default=None)  # 待确认状态
     last_accessed = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -197,7 +198,7 @@ def create_invite_code(db, code: str):
     return invite
 
 
-def save_conversation_context(db, user_id: int, session_id: str, compressed_context: list):
+def save_conversation_context(db, user_id: int, session_id: str, compressed_context: list, pending_confirmation: dict = None):
     """保存压缩后的上下文到数据库"""
     conv = db.query(Conversation).filter(
         Conversation.user_id == user_id,
@@ -205,17 +206,40 @@ def save_conversation_context(db, user_id: int, session_id: str, compressed_cont
     ).first()
     if conv:
         conv.compressed_context = compressed_context
+        if pending_confirmation is not None:
+            conv.pending_confirmation = pending_confirmation
         conv.last_accessed = datetime.utcnow()
     else:
         conv = Conversation(
             user_id=user_id,
             session_id=session_id,
             compressed_context=compressed_context,
+            pending_confirmation=pending_confirmation,
             messages=[]  # 初始化为空，由前端通过 /save_conversation 保存
         )
         db.add(conv)
     db.commit()
     return conv
+
+
+def get_pending_confirmation(db, user_id: int, session_id: str) -> dict:
+    """获取待确认状态"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    return conv.pending_confirmation if conv else None
+
+
+def clear_pending_confirmation(db, user_id: int, session_id: str):
+    """清除待确认状态"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if conv:
+        conv.pending_confirmation = None
+        db.commit()
 
 
 def get_conversation_context(db, user_id: int, session_id: str) -> list:

@@ -351,11 +351,13 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
     加载当前用户的简历数据
     """
     try:
-        print(f"[DEBUG] load_resume: current_user.id={current_user.id}, current_user.email={current_user.email}")
+        print(f"[DEBUG] load_resume: user_id={current_user.id}, email={current_user.email}")
         resume_data = get_user_resume(db, current_user.id)
-        print(f"[DEBUG] load_resume: resume_data={resume_data}")
         if isinstance(resume_data, dict) and "error" in resume_data:
             return JSONResponse(content={}, status_code=500)
+        # 只打印基本信息，不打印完整 resume_data
+        has_resume = bool(resume_data and isinstance(resume_data, dict) and resume_data.get("basics"))
+        print(f"[DEBUG] load_resume: 已加载={has_resume}, keys={list(resume_data.keys()) if resume_data else None}")
         return JSONResponse(content=resume_data)
     except Exception as e:
         print(f"[ERROR] load_resume: {str(e)}")
@@ -554,6 +556,9 @@ async def chat_endpoint(
         if not session_id:
             session_id = generate_session_id()
 
+        # 构建 graph 配置（用于状态追踪）
+        config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
+
         # 检测用户是否点击了确认按钮（必须在使用 message 之前）
         is_confirm_click = '[CONFIRM_REPLY:' in message.strip()
 
@@ -596,80 +601,27 @@ async def chat_endpoint(
             # 只有文本
             current_message = HumanMessage(content=message.strip())
 
-        # 从数据库获取压缩后的上下文
+        # 从数据库获取压缩后的上下文（这是唯一的消息来源）
         from database import get_conversation_context
         db_context_raw = get_conversation_context(db, current_user.id, session_id)
 
-        # 只提取 HumanMessage，过滤掉 ToolMessage 和 AIMessage
-        db_context = []
+        # 转换数据库中的消息为 Message 对象
+        historical_messages = []
         for msg_dict in db_context_raw:
             msg_type = msg_dict.get("type", "")
+            content = msg_dict.get("content", "")
             if msg_type == "human":
-                content = msg_dict.get("content", "")
-                db_context.append(HumanMessage(content=content))
+                historical_messages.append(HumanMessage(content=content))
+            elif msg_type == "ai":
+                historical_messages.append(AIMessage(content=content))
 
-        # 从 checkpointer 获取历史消息
-        # 在 config 中包含 user_id，确保每个用户的状态隔离
-        config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
-        print(f"[DEBUG] config: {config}")
-        try:
-            saved_state = graph.get_state(config)
-            print(f"[DEBUG] saved_state: {saved_state}")
-            print(f"[DEBUG] saved_state.values: {saved_state.values if saved_state else None}")
+        # 构建 all_messages：数据库中的历史消息 + 当前用户消息
+        all_messages = list(historical_messages) + [current_message]
+        print(f"[InitState] 从数据库加载 {len(historical_messages)} 条历史消息 + 当前消息")
 
-            if saved_state and saved_state.values:
-                saved_messages = saved_state.values.get("messages", [])
-                print(f"[DEBUG] saved_messages count: {len(saved_messages)}")
-                for i, msg in enumerate(saved_messages):
-                    print(f"  [DEBUG] saved_msg[{i}]: {type(msg).__name__}: {str(getattr(msg, 'content', ''))[:50]}...")
-                saved_messages = saved_state.values.get("messages", [])
-
-                # 只保留 HumanMessage 和 AIMessage，过滤掉 ToolMessage
-                filtered_messages = []
-                for msg in saved_messages:
-                    if isinstance(msg, ToolMessage):
-                        # 跳过 ToolMessage
-                        continue
-                    else:
-                        filtered_messages.append(msg)
-
-                # 只使用 checkpointer 中的 HumanMessage（这是上一轮处理后的结果）
-                if filtered_messages:
-                    historical_messages = filtered_messages
-                    print(f"[DEBUG] 使用 checkpointer 历史消息: {len(historical_messages)} 条")
-                elif db_context:
-                    # 如果 checkpointer 为空，使用数据库中的 HumanMessage
-                    historical_messages = db_context
-                    print(f"[DEBUG] 使用 db_context 历史消息: {len(historical_messages)} 条")
-                else:
-                    historical_messages = []
-                    print(f"[DEBUG] 无历史消息")
-
-                # 构建 all_messages：历史 HumanMessage + 当前 HumanMessage
-                all_messages = list(historical_messages) + [current_message]
-                print(f"[DEBUG] all_messages 构建完成: {len(all_messages)} 条")
-                for i, msg in enumerate(all_messages):
-                    print(f"  [DEBUG] all_msg[{i}]: {type(msg).__name__}: {str(getattr(msg, 'content', ''))[:50]}...")
-
-                # 优先使用数据库中的数据
-                initial_resume_data = resume_data if resume_data else saved_state.values.get("resume_data", {})
-                initial_jd_data = jd_data if jd_data else saved_state.values.get("jd_data", {})
-            else:
-                # checkpointer 为空，从数据库加载
-                if db_context:
-                    all_messages = list(db_context) + [current_message]
-                else:
-                    all_messages = [current_message]
-                initial_resume_data = resume_data or {}
-                initial_jd_data = jd_data or {}
-        except Exception as e:
-            # 异常情况下从数据库加载
-            if db_context:
-                all_messages = list(db_context) + [current_message]
-            else:
-                all_messages = [current_message]
-            initial_resume_data = resume_data or {}
-            initial_jd_data = jd_data or {}
+        # 使用数据库中的数据
+        initial_resume_data = resume_data if resume_data else (get_user_resume(db, current_user.id) or {})
+        initial_jd_data = jd_data if jd_data else (get_user_jd(db, current_user.id) or {})
 
         # 创建初始状态
         # 用户点击确认时：清除 pending_confirmation，从 formatter_llm 开始
@@ -686,108 +638,23 @@ async def chat_endpoint(
         for i, msg in enumerate(all_messages):
             print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
 
-        async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, has_pending_confirmation, config):
+        async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, pending_confirmation=None):
             """异步保存状态到数据库，不阻塞 SSE 响应"""
             try:
-                # 注意：不再使用 messages_list，因为它可能包含重复消息
-                # 只依赖 checkpointer 来获取消息历史
                 print(f"[SaveStateAsync] 开始保存状态")
-                
-                # 从 checkpointer 获取当前状态
-                current_state = graph.get_state(config)
-                existing_messages = []
-                if current_state and current_state.values:
-                    existing_messages = current_state.values.get("messages", [])
-                    print(f"[SaveState] checkpointer 中已有: {len(existing_messages)} 条消息")
-                    for i, msg in enumerate(existing_messages):
-                        tc = getattr(msg, 'tool_calls', [])
-                        tc_names = [t.get('name') if isinstance(t, dict) else getattr(t, 'name', None) for t in tc]
-                        print(f"  [{i}] {type(msg).__name__}: tool_calls={tc_names}")
-                
-                # 从数据库获取已有的 HumanMessage（用于增量保存）
-                from database import get_conversation_context
-                db_context_raw = get_conversation_context(db, user_id, session_id)
-                db_human_contents = set()
-                for msg_dict in db_context_raw:
-                    if msg_dict.get("type") == "human":
-                        content = msg_dict.get("content", "")
-                        if isinstance(content, list):
-                            content = str(content)
-                        db_human_contents.add(content)
-                
-                # 构建去重映射（使用内容+类型作为key）
-                existing_map = {}
-                for msg in existing_messages:
-                    if isinstance(msg, ToolMessage):
-                        continue  # 不保存 ToolMessage
-                    content = getattr(msg, 'content', '')
-                    if isinstance(content, list):
-                        content = str(content)
-                    key = (str(content), type(msg).__name__)
-                    existing_map[key] = msg
-                
-                # 只添加不在已有历史中的新消息
-                new_messages_added = []
-                for msg in existing_messages:
-                    if isinstance(msg, ToolMessage):
-                        continue
-                    content = getattr(msg, 'content', '')
-                    if isinstance(content, list):
-                        content = str(content)
-                    key = (str(content), type(msg).__name__)
-                    if key not in existing_map:
-                        new_messages_added.append(msg)
-                        existing_map[key] = msg
-                        print(f"[SaveState] 添加新消息: {type(msg).__name__}: {str(content)[:50]}...")
-                
-                # 合并：历史消息 + 新消息（保持 Human -> AI 的顺序）
-                all_human = [msg for msg in existing_messages if isinstance(msg, HumanMessage)]
-                all_human.extend([msg for msg in new_messages_added if isinstance(msg, HumanMessage)])
-                
-                all_ai = [msg for msg in existing_messages if isinstance(msg, AIMessage)]
-                all_ai.extend([msg for msg in new_messages_added if isinstance(msg, AIMessage)])
-                
-                # 保持正确的顺序：Human -> AI
-                messages_to_save = all_human + all_ai
-                
-                # 提取最后一条 AIMessage 用于上下文压缩
+
+                # 从 messages_list 中提取 HumanMessage 和 AIMessage（跳过 ToolMessage）
+                all_human = [msg for msg in messages_list if isinstance(msg, HumanMessage)]
+                all_ai = [msg for msg in messages_list if isinstance(msg, AIMessage)]
+
+                # 提取最后一条 AIMessage
                 new_ai = all_ai[-1] if all_ai else None
-                
-                # 确定 final_resume_data 和 final_jd_data
+
+                # 确定最终数据
                 final_resume_data = resume_data_result if resume_data_result else {}
                 final_jd_data = initial_jd_data if initial_jd_data else {}
-                
-                # 确定 pending_confirmation 状态
-                if has_pending_confirmation:
-                    current_pending = None
-                    if current_state and current_state.values:
-                        current_pending = current_state.values.get("pending_confirmation")
-                else:
-                    current_pending = None
-                
-                print(f"[SaveState] 保存 checkpointer: {len(messages_to_save)} total messages (Human: {len(all_human)}, AI: {len(all_ai)})")
-                for i, msg in enumerate(messages_to_save):
-                    print(f"  [{i}] {type(msg).__name__}: {str(getattr(msg, 'content', ''))[:50]}...")
 
-                # 更新 checkpointer 之前，先获取当前状态
-                before_update = graph.get_state(config)
-                print(f"[SaveState] update 前 checkpointer: {len(before_update.values.get('messages', [])) if before_update and before_update.values else 0} messages")
-
-                graph.update_state(
-                    config,
-                    {
-                        "messages": messages_to_save,
-                        "resume_data": final_resume_data,
-                        "jd_data": final_jd_data,
-                        "pending_confirmation": current_pending
-                    }
-                )
-
-                # 更新后立即读取验证
-                after_update = graph.get_state(config)
-                print(f"[SaveState] update 后 checkpointer: {len(after_update.values.get('messages', [])) if after_update and after_update.values else 0} messages")
-                for i, msg in enumerate(after_update.values.get('messages', []) if after_update and after_update.values else []):
-                    print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
+                print(f"[SaveState] 待保存: {len(all_human)} HumanMessage, {len(all_ai)} AIMessage, pending_confirmation={pending_confirmation is not None}")
 
                 # 保存到数据库
                 if final_resume_data:
@@ -811,22 +678,7 @@ async def chat_endpoint(
                     else:
                         compressed_context.append({**dict(new_ai), "type": "ai"})
 
-                # 2. 构建完整历史（用于前端显示，包含 HumanMessage + AIMessage）
-                # 注意：只使用 messages_to_save（来自 checkpointer），避免 messages_list 的重复问题
-                full_history = []
-                for msg in messages_to_save:
-                    if isinstance(msg, HumanMessage):
-                        if hasattr(msg, 'model_dump'):
-                            full_history.append({**msg.model_dump(), "type": "human"})
-                        else:
-                            full_history.append({**dict(msg), "type": "human"})
-                    elif isinstance(msg, AIMessage) and msg.content:
-                        if hasattr(msg, 'model_dump'):
-                            full_history.append({**msg.model_dump(), "type": "ai"})
-                        else:
-                            full_history.append({**dict(msg), "type": "ai"})
-
-                # 3. 检查是否需要压缩
+                # 检查是否需要压缩
                 if len(all_human) > MAX_HUMAN_MESSAGES:
                     # 设置压缩状态
                     compression_state.compressing = True
@@ -867,9 +719,8 @@ async def chat_endpoint(
                         # 通知压缩完成
                         notify_compression_complete()
 
-                # 4. 保存到数据库（只保存 compressed_context，不保存 full_history 到 messages 字段）
-                # full_history 由前端通过 /save_conversation 端点保存
-                save_conversation_context(db, user_id, session_id, compressed_context)
+                # 保存到数据库
+                save_conversation_context(db, user_id, session_id, compressed_context, pending_confirmation)
 
             except Exception as e:
                 print(f"[Warning] 异步保存失败: {e}")
@@ -886,7 +737,7 @@ async def chat_endpoint(
             messages_list = list(all_messages)  # 从 initial_state 开始
             print(f"[StreamResponse] messages_list 初始化: {len(messages_list)} 条消息")
             resume_data_result = {}
-            has_pending_confirmation = False
+            pending_confirmation_result = None  # 保存待确认状态
             final_content = None
             accumulated_content = ""
             current_node = None
@@ -936,9 +787,9 @@ async def chat_endpoint(
                             if isinstance(event.get("data", {}).get("output"), dict):
                                 output = event["data"]["output"]
                                 if "pending_confirmation" in output and output["pending_confirmation"]:
-                                    has_pending_confirmation = True
                                     confirm_data = output["pending_confirmation"]
                                     confirm_msg_id = str(uuid.uuid4())
+                                    pending_confirmation_result = confirm_data  # 保存待确认状态
                                     yield 'data: ' + json.dumps({
                                         "type": "confirm",
                                         "id": confirm_msg_id,
@@ -989,11 +840,11 @@ async def chat_endpoint(
                 if isinstance(user_message, HumanMessage):
                     messages_list = [user_message] + messages_list
 
-            # 保存消息到 checkpointer 和数据库（异步执行，不阻塞 SSE 响应）
+            # 保存消息到数据库（异步执行，不阻塞 SSE 响应）
             import asyncio
             asyncio.create_task(save_state_async(
                 db, current_user.id, session_id,
-                messages_list, resume_data_result, initial_jd_data, has_pending_confirmation, config
+                messages_list, resume_data_result, initial_jd_data, pending_confirmation_result
             ))
 
             yield 'data: ' + json.dumps({"type": "end", "session_id": session_id}) + '\n\n'
@@ -1025,24 +876,18 @@ async def confirm_endpoint(
         import resume_agent
         resume_agent.current_user_id = current_user.id
 
-        # 获取当前状态，使用包含 user_id 的 config
-        config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
-        saved_state = graph.get_state(config)
+        # 从数据库获取 pending_confirmation
+        from database import get_pending_confirmation, clear_pending_confirmation, get_user_resume
+        pending_confirmation = get_pending_confirmation(db, current_user.id, session_id)
 
-        if not saved_state or not saved_state.values:
-            return JSONResponse(content={"error": "会话不存在"}, status_code=404)
-
-        state = saved_state.values
-        messages = state.get("messages", [])
-        resume_data = state.get("resume_data", {})
-
-        # 检查 pending_confirmation
-        pending_confirmation = state.get("pending_confirmation", None)
         if not pending_confirmation:
             return JSONResponse(content={"error": "没有待确认的操作"}, status_code=400)
 
         if pending_confirmation.get("confirm_id") != confirm_id:
             return JSONResponse(content={"error": "确认ID不匹配"}, status_code=400)
+
+        # 从数据库获取简历数据
+        resume_data = get_user_resume(db, current_user.id) or {}
 
         # 根据操作处理
         if action == "confirm":
@@ -1054,11 +899,7 @@ async def confirm_endpoint(
             save_user_resume(db, current_user.id, resume_data)
 
             # 清除 pending_confirmation 状态
-            graph.update_state(config, {
-                "resume_data": resume_data,
-                "jd_data": state.get("jd_data", {}),
-                "pending_confirmation": None
-            })
+            clear_pending_confirmation(db, current_user.id, session_id)
 
             return JSONResponse(content={
                 "success": True,
@@ -1067,23 +908,8 @@ async def confirm_endpoint(
             })
 
         else:
-            # 取消 - 清除状态和临时消息
-            # 过滤掉 pending 期间添加的临时 ToolMessage（ask_confirmation 相关的）
-            cleaned_messages = []
-            for msg in messages:
-                if isinstance(msg, ToolMessage):
-                    # 保留有 name 的 ToolMessage，过滤掉临时消息
-                    if getattr(msg, 'name', None) and '等待确认' not in str(msg.content):
-                        cleaned_messages.append(msg)
-                else:
-                    cleaned_messages.append(msg)
-
-            graph.update_state(config, {
-                "messages": cleaned_messages,
-                "resume_data": resume_data,
-                "jd_data": state.get("jd_data", {}),
-                "pending_confirmation": None
-            })
+            # 取消 - 清除 pending_confirmation 状态
+            clear_pending_confirmation(db, current_user.id, session_id)
 
             return JSONResponse(content={
                 "success": True,

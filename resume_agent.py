@@ -14,6 +14,7 @@ import json
 import uuid
 import asyncio
 import httpx
+import time
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -127,7 +128,13 @@ class JobDescription(BaseModel):
 
 httpx_client = httpx.Client(
     timeout=httpx.Timeout(90.0),
-    limits=httpx.Limits(max_connections=10),
+    limits=httpx.Limits(max_connections=20),  # 增加连接池大小
+)
+
+# 为 formatter_llm 创建独立的 http_client，避免连接池耗尽
+formatter_http_client = httpx.Client(
+    timeout=httpx.Timeout(120.0),  # formatter 需要更长的超时
+    limits=httpx.Limits(max_connections=5),
 )
 
 # Conversation LLM - 负责对话和读取
@@ -145,7 +152,7 @@ formatter_llm = ChatOpenAI(
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("BASE_URL"),
     model="gemini-3-flash-preview",
-    http_client=httpx_client,
+    http_client=formatter_http_client,  # 使用独立的 http_client
     max_retries=3,
     temperature=0.0  # 格式化需要更低温度
 )
@@ -210,6 +217,7 @@ CONVERSATION_PROMPT = """
 # 禁止行为
 - **重要** 绝对禁止输出 JSON 代码块。
 - **重要** 严禁输出JSON格式内容。
+- **重要** 禁止构造虚假的修改建议，必须基于用户实际提供的内容。
 - 绝对禁止说："已保存"、"已修改"、"正在为你更新"。
 - 绝对禁止提及 JSON、Key、Value 等技术术语。
 
@@ -280,7 +288,7 @@ FORMATTER_PROMPT = """# Role
 你是简历格式化专家，负责将用户的修改意图转化为规范的 JSON 格式，并调用 save_resume 工具保存结果。
 
 # 核心规则
-1. 从对话历史中，分析用户想要修改什么内容
+1. 从上下文对话中，分析用户想要修改什么内容
 2. 结合当前的简历数据，只修改用户明确指定的部分，允许覆盖部分原有内容
 3. 将修改内容格式化为符合 JSON schema 的格式
 4. **保留原有内容的完整性**，只修改用户明确指定的部分
@@ -289,11 +297,11 @@ FORMATTER_PROMPT = """# Role
 # 如何识别修改意图
 - 用户说"把xxx改成yyy"、"修改xxx为yyy"、"xxx换成yyy"等 → 明确修改指令
 - 用户说"好的"、"可以"、"确认"等 → 这是确认词，不是修改内容
-- 根据上下文对话，理解用户的真实修改需求
 
 # JSON 结构规范
 ```json
 {
+  "photo": "证件照 Base64 图片数据（保留原值，不要修改或删除）",
   "basics": {
     "name": "姓名",
     "gender": "性别",
@@ -336,7 +344,6 @@ FORMATTER_PROMPT = """# Role
 # 内容编辑自由度
 - **允许**：将长字符串拆分为数组（如 details 数组）
 - **允许（重要）**：用两个星号 ** 包裹关键信息以加粗，包括量化指标（数字、百分比）、核心技术/工具、核心成就，以及标签式描述（如“技术栈：”、“职责：”等）。
-- **允许（谨慎）**：仅在用户表述明显不完整、模糊或遗漏关键信息时，才进行小幅优化
 - **允许**：补充缺失的元数据（如 date_range）
 - **禁止**：修改用户未指定的字段
 - **禁止**：删除用户未要求删除的内容
@@ -522,7 +529,8 @@ async def conversation_node(state: AgentState) -> dict:
     """
     debug_print_state(state, "conversation_node_ENTER")
     
-    print(f"\n=== [Node] conversation_llm ===")
+    start_time = time.time()
+    print(f"\n=== [Node] conversation_llm [开始] ===")
     print(f"Input: {len(state.messages)} messages")
     for i, msg in enumerate(state.messages):
         content = getattr(msg, 'content', '')
@@ -530,11 +538,6 @@ async def conversation_node(state: AgentState) -> dict:
         msg_type = type(msg).__name__
         has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
         print(f"  [{i}] {msg_type}: {content_str}... (tool_calls: {bool(has_tool_calls)})")
-
-    last_msg = state.messages[-1] if state.messages else None
-    if not last_msg:
-        print("=== [End] conversation_llm (no messages) ===\n")
-        return {"messages": state.messages, "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}, "user_id": state.user_id}
 
     # 构建系统消息，使用模板替换 resume_data
     if state.resume_data:
@@ -557,9 +560,16 @@ async def conversation_node(state: AgentState) -> dict:
     for msg in state.messages:
         if isinstance(msg, ToolMessage):
             continue  # 跳过 ToolMessage
-        elif isinstance(msg, AIMessage) and msg.tool_calls:
-            # 如果 AIMessage 有 tool_calls，清空它们（工具会在 tool_node 中执行）
-            llm_messages.append(AIMessage(content=msg.content, tool_calls=[]))
+        elif isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                # 如果 AIMessage 有 tool_calls，清空它们（工具会在 tool_node 中执行）
+                llm_messages.append(AIMessage(content=msg.content, tool_calls=[]))
+            elif getattr(state, 'just_saved', False) and msg.content and str(msg.content).strip().startswith("{"):
+                # just_saved=True 且内容是 JSON，跳过 formatter_llm 的输出
+                # conversation_llm 只需要知道 just_saved 状态，不需要完整 JSON
+                continue
+            else:
+                llm_messages.append(msg)
         else:
             llm_messages.append(msg)
 
@@ -585,12 +595,13 @@ async def conversation_node(state: AgentState) -> dict:
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败: {str(e)}")
 
+    elapsed_time = time.time() - start_time
     # 打印 LLM 输出
     print("LLM Output:")
     print(f"  content: {repr(response.content)[:200]}")
     if hasattr(response, 'tool_calls') and response.tool_calls:
         print(f"  tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in response.tool_calls]}")
-    print("=== [End] conversation_llm ===\n")
+    print(f"=== [Node] conversation_llm [结束] 耗时: {elapsed_time:.2f}s ===\n")
 
     # 如果原始消息中有带 tool_calls 的 AIMessage，清除它们
     cleaned_messages = []
@@ -639,12 +650,13 @@ async def tool_node(state: AgentState) -> dict:
     """
     debug_print_state(state, "tool_node_ENTER")
     
-    print(f"\n=== [Node] tool_node ===")
+    start_time = time.time()
+    print(f"\n=== [Node] tool_node [开始] ===")
     last_message = state.messages[-1]
 
     # 检查是否有工具调用
     if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
-        print("=== [End] tool_node (no tool_calls) ===\n")
+        print("=== [End] tool_node (no tool_calls) 耗时: 0.00s ===\n")
         # 没有工具调用时，返回原始消息（保持上下文）
         return {"messages": list(state.messages), "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
 
@@ -745,8 +757,9 @@ async def tool_node(state: AgentState) -> dict:
         new_messages.append(tool_message)
 
     # 打印工具结果
+    elapsed_time = time.time() - start_time
     print(f"Tool results: {[m.content for m in new_messages]}")
-    print("=== [End] tool_node ===\n")
+    print(f"=== [Node] tool_node [结束] 耗时: {elapsed_time:.2f}s ===\n")
 
     # 返回所有消息：原始消息 + 新消息（这样 router 才能找到 AIMessage 的 tool_calls）
     all_messages = list(state.messages) + new_messages
@@ -775,7 +788,8 @@ async def formatter_node(state: AgentState) -> dict:
     """
     debug_print_state(state, "formatter_node_ENTER")
     
-    print(f"\n=== [Node] formatter_llm ===")
+    start_time = time.time()
+    print(f"\n=== [Node] formatter_llm [开始] ===")
     print(f"Input: resume_data keys={list((state.resume_data or {}).keys())}")
 
     # 检查是否用户点击了确认
@@ -809,9 +823,6 @@ async def formatter_node(state: AgentState) -> dict:
 === 之前生成的修改建议 ===
 {previous_modification}
 
-=== 当前简历数据 ===
-{resume_data_str}
-
 请直接将修改建议格式化为 JSON 并调用 save_resume 工具保存。""")
         ]
     else:
@@ -823,9 +834,6 @@ async def formatter_node(state: AgentState) -> dict:
 === 对话历史 ===
 {user_modification}
 
-=== 当前简历数据 ===
-{resume_data_str}
-
 请分析用户的修改需求，直接调用 save_resume 工具保存更新后的简历。""")
         ]
 
@@ -836,10 +844,12 @@ async def formatter_node(state: AgentState) -> dict:
     )
 
     try:
-        async with asyncio.timeout(60.0):
+        async with asyncio.timeout(90.0):
             response = await formatter_llm_with_tools.ainvoke(messages)
     except asyncio.TimeoutError:
         raise TimeoutError("Formatter LLM 调用超时，请稍后重试")
+    except Exception as e:
+        raise RuntimeError(f"Formatter LLM 调用失败: {str(e)}")
 
     # 提取 JSON 并清理
     content = response.content or "{}"
@@ -863,12 +873,13 @@ async def formatter_node(state: AgentState) -> dict:
     except Exception:
         formatted_content = "{}"
 
+    elapsed_time = time.time() - start_time
     # 打印 LLM 输出
     print("LLM Output:")
     print(f"  content: {formatted_content[:200]}")
     if hasattr(response, 'tool_calls') and response.tool_calls:
         print(f"  tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in response.tool_calls]}")
-    print("=== [End] formatter_llm ===\n")
+    print(f"=== [Node] formatter_llm [结束] 耗时: {elapsed_time:.2f}s ===\n")
 
     new_messages = [
         AIMessage(content=formatted_content, tool_calls=response.tool_calls if hasattr(response, 'tool_calls') else [])
@@ -1057,26 +1068,9 @@ graph_builder.add_conditional_edges(
     }
 )
 
-# 编译图（带 checkpointer 用于状态持久化）
-# 根据环境变量选择 checkpointer
-from langgraph.checkpoint.memory import MemorySaver
-
-use_sqlite = os.getenv("USE_SQLITE_CHECKPOINTER", "false").lower() == "true"
-
-# 检测是否在 Docker 环境中运行
-in_docker = os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", "")
-
-if use_sqlite and in_docker:
-    # Docker 部署：使用内存存储（避免 Gunicorn 多进程下异步问题）
-    checkpointer = MemorySaver()
-    print("[Checkpointer] 使用内存存储 (Docker模式)")
-else:
-    # 本地开发：使用内存存储
-    checkpointer = MemorySaver()
-    print("[Checkpointer] 使用内存存储")
-
-graph = graph_builder.compile(checkpointer=checkpointer)
-print("[Checkpointer] 图编译完成")
+# 编译图（不使用 checkpointer，状态由数据库管理）
+graph = graph_builder.compile()
+print("[Graph] 图编译完成（无 checkpointer）")
 # =============================================================================
 # 测试函数
 # =============================================================================
