@@ -116,6 +116,18 @@ const workDetailsText = ref('')
 const projectDetailsText = ref('')
 const selfEvalText = ref('')
 
+// 首次进入选择弹窗状态
+const showStartDialog = ref(false)
+const showUploadDialog = ref(false)
+const resumeImageFile = ref(null) // 选择的图片文件
+const resumeImagePreview = ref('') // 图片预览
+const isResumePdf = ref(false) // 是否是PDF文件
+const isParsingResume = ref(false) // 解析中状态
+const resumeFileInput = ref(null) // 简历文件输入元素引用
+const hasResumeFileSelected = ref(false) // 是否已选择简历文件（上传流程已开始，不可返回）
+const isLoadingInitialData = ref(false) // 防止 loadInitialData 重复调用
+let parsingStatusPollInterval = null // 解析状态轮询定时器
+
 // 获取认证 headers
 function getAuthHeaders() {
   const headers = {
@@ -136,11 +148,19 @@ async function checkLoginStatus() {
     token.value = savedToken
     currentUser.value = JSON.parse(savedUser)
     isLoggedIn.value = true
-    // 加载简历数据
-    await loadResume()
+    console.log('✅ 用户已登录:', currentUser.value?.email)
   } else {
     isLoggedIn.value = false
     currentUser.value = null
+    console.log('❌ 用户未登录')
+  }
+}
+
+// 监听 localStorage 变化（用于跨标签页同步登录状态）
+function handleStorageChange(event) {
+  if (event.key === 'access_token' || event.key === 'user') {
+    console.log('📦 检测到登录状态变化，重新检查...')
+    checkLoginStatus()
   }
 }
 
@@ -153,6 +173,64 @@ onMounted(async () => {
   if (!isLoggedIn.value) {
     return
   }
+
+  // 加载数据并检查是否首次访问
+  await loadInitialData()
+})
+
+// 初始化响应式检测
+onMounted(() => {
+  // 初始检测
+  checkMobileView()
+
+  // 监听 localStorage 变化
+  window.addEventListener('storage', handleStorageChange)
+
+  // 使用 ResizeObserver 监听窗口大小变化
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      checkMobileView()
+    })
+    resizeObserver.observe(document.body)
+  } else {
+    // 降级方案：使用 window resize 事件
+    window.addEventListener('resize', checkMobileView)
+  }
+})
+
+// 清理监听器
+onUnmounted(() => {
+  window.removeEventListener('storage', handleStorageChange)
+  stopParsingStatusPoll()
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+  } else {
+    window.removeEventListener('resize', checkMobileView)
+  }
+})
+
+// 监听路由变化，自动更新登录状态
+watch(() => route.path, async () => {
+  // 切换到首页时，检查登录状态并加载数据
+  if (route.path === '/') {
+    console.log('[DEBUG] watch: 路由变化到首页，检查登录状态...')
+    await checkLoginStatus()
+    if (isLoggedIn.value) {
+      console.log('[DEBUG] watch: 用户已登录，开始加载数据...')
+      await loadInitialData()
+    }
+  }
+})
+
+// 加载初始数据的函数（同时检查首次访问）
+async function loadInitialData() {
+  // 防止重复调用
+  if (isLoadingInitialData.value) {
+    console.log('[DEBUG] loadInitialData: 已在加载中，跳过重复调用')
+    return
+  }
+  isLoadingInitialData.value = true
+  console.log('[DEBUG] loadInitialData: 开始加载...')
 
   try {
     const response = await fetch('/load_resume', {
@@ -170,102 +248,85 @@ onMounted(async () => {
     const data = await response.json()
     resumeData.value = data
 
-    // 加载JD数据（新增）
-    try {
-      const jdResponse = await fetch('/load_jd', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({})
-      })
-      if (jdResponse.status === 401) {
-        logout()
-        return
-      }
-      const jdResult = await jdResponse.json()
-      if (jdResult && Object.keys(jdResult).length > 0) {
-        jdData.value = jdResult
-      }
-    } catch (jdError) {
-      console.log('暂无岗位数据，可以上传目标岗位信息获取针对性的简历优化建议')
+    // 检查解析状态
+    const parsingStatus = data.parsing_status || 'none'
+    console.log(`[DEBUG] loadInitialData: parsingStatus="${parsingStatus}"`)
+
+    // 如果正在解析中，显示上传弹窗并启动轮询
+    if (parsingStatus === 'parsing') {
+      console.log('📋 检测到简历正在解析中，启动轮询...')
+      showUploadDialog.value = true
+      hasResumeFileSelected.value = true
+      isParsingResume.value = true
+      resumeImagePreview.value = ''
+      resumeImageFile.value = null
+      isResumePdf.value = false
+      // 启动轮询检查解析状态
+      startParsingStatusPoll()
+      return
     }
 
-    // 加载对话历史
-    try {
-      const convResponse = await fetch('/load_conversation', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: sessionId.value })
-      })
-      if (convResponse.status === 401) {
-        logout()
-        return
-      }
-      const convData = await convResponse.json()
-      if (Array.isArray(convData) && convData.length > 0) {
-        messages.value = convData
-      } else {
-        // 没有历史消息，添加欢迎消息
-        messages.value.push({
-          id: Date.now(),
-          role: 'assistant',
-          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-        })
-      }
-    } catch (convError) {
-      console.log('加载对话历史失败')
-      messages.value.push({
-        id: Date.now(),
-        role: 'assistant',
-        content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-      })
+    // 停止轮询（如果之前在轮询中）
+    stopParsingStatusPoll()
+
+// 轮询检查解析状态
+async function pollParsingStatus() {
+  try {
+    const response = await fetch('/api/resume/parsing_status', {
+      method: 'GET',
+      headers: getAuthHeaders()
+    })
+
+    if (response.status === 401) {
+      logout()
+      return
     }
+
+    const data = await response.json()
+    const status = data.parsing_status || 'none'
+    console.log(`[DEBUG] pollParsingStatus: status="${status}"`)
+
+    if (status === 'completed') {
+      // 解析完成，重新加载简历数据
+      console.log('✅ 解析完成，重新加载数据...')
+      stopParsingStatusPoll()
+      isParsingResume.value = false
+      showUploadDialog.value = false
+      // 重新加载简历
+      await loadResumeData()
+    } else if (status === 'failed') {
+      // 解析失败
+      console.error('❌ 解析失败')
+      stopParsingStatusPoll()
+      isParsingResume.value = false
+      alert('简历解析失败，请重新上传')
+    }
+    // 如果还是 'parsing'，继续轮询
   } catch (error) {
-    console.error('加载简历失败:', error)
-    messages.value.push({
-      id: Date.now(),
-      role: 'assistant',
-      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
-    })
+    console.error('检查解析状态失败:', error)
   }
-})
+}
 
-// 初始化响应式检测
-onMounted(() => {
-  // 初始检测
-  checkMobileView()
-  
-  // 使用 ResizeObserver 监听窗口大小变化
-  if (typeof ResizeObserver !== 'undefined') {
-    resizeObserver = new ResizeObserver(() => {
-      checkMobileView()
-    })
-    resizeObserver.observe(document.body)
-  } else {
-    // 降级方案：使用 window resize 事件
-    window.addEventListener('resize', checkMobileView)
+// 启动解析状态轮询
+function startParsingStatusPoll() {
+  // 先清除之前的轮询
+  stopParsingStatusPoll()
+  // 立即检查一次
+  pollParsingStatus()
+  // 每3秒检查一次
+  parsingStatusPollInterval = setInterval(pollParsingStatus, 3000)
+}
+
+// 停止解析状态轮询
+function stopParsingStatusPoll() {
+  if (parsingStatusPollInterval) {
+    clearInterval(parsingStatusPollInterval)
+    parsingStatusPollInterval = null
   }
-})
+}
 
-// 清理监听器
-onUnmounted(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-  } else {
-    window.removeEventListener('resize', checkMobileView)
-  }
-})
-
-// 监听路由变化，自动更新登录状态
-watch(() => route.path, () => {
-  checkLoginStatus()
-  // 如果登录成功且在首页，尝试加载数据
-  if (isLoggedIn.value && route.path === '/') {
-    loadInitialData()
-  }
-})
-
-// 加载初始数据的函数
-async function loadInitialData() {
+// 加载简历数据（不检查解析状态）
+async function loadResumeData() {
   try {
     const response = await fetch('/load_resume', {
       method: 'POST',
@@ -280,6 +341,20 @@ async function loadInitialData() {
 
     const data = await response.json()
     resumeData.value = data
+    // 更新简历内容
+    const { parsing_status, ...resumeContent } = data
+    if (resumeContent && Object.keys(resumeContent).length > 0) {
+      console.log('✅ 简历数据已加载')
+    }
+  } catch (error) {
+    console.error('加载简历数据失败:', error)
+  }
+}
+
+    // 检查是否首次进入（无简历且无聊天记录）
+    // 排除 parsing_status 字段来判断是否有真实简历数据
+    const { parsing_status, ...resumeContent } = data
+    const hasResume = resumeContent && Object.keys(resumeContent).length > 0
 
     // 加载JD数据
     try {
@@ -312,24 +387,40 @@ async function loadInitialData() {
         return
       }
       const convData = await convResponse.json()
-      if (Array.isArray(convData) && convData.length > 0) {
+      const hasChatHistory = Array.isArray(convData) && convData.length > 0
+
+      // 首次进入检测：无简历且无聊天记录
+      if (!hasResume && !hasChatHistory) {
+        showStartDialog.value = true
+        return
+      }
+
+      if (hasChatHistory) {
         messages.value = convData
       } else {
-        messages.value.push({
+        messages.value = [{
           id: Date.now(),
           role: 'assistant',
           content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-        })
+        }]
       }
     } catch (convError) {
-      messages.value.push({
+      messages.value = [{
         id: Date.now(),
         role: 'assistant',
         content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-      })
+      }]
     }
   } catch (error) {
     console.error('加载数据失败:', error)
+    messages.value = [{
+      id: Date.now(),
+      role: 'assistant',
+      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
+    }]
+  } finally {
+    isLoadingInitialData.value = false
+    console.log('[DEBUG] loadInitialData: 完成')
   }
 }
 
@@ -1522,6 +1613,163 @@ function handleDialogKeydown(event) {
   }
 }
 
+// ==================== 首次进入选择弹窗 ====================
+
+// 打开开始选择弹窗（首次进入且无简历时）
+function openStartDialog() {
+  showStartDialog.value = true
+}
+
+// 关闭开始弹窗
+function closeStartDialog() {
+  showStartDialog.value = false
+}
+
+// 从空白创建简历
+function startFromBlank() {
+  closeStartDialog()
+  // 直接进入主页，简历数据为空，用户可以手动填写
+  // 添加欢迎消息
+  messages.value = [{
+    id: Date.now(),
+    role: 'assistant',
+    content: '你好！我是简历助手。你可以从空白开始创建简历，我会帮你完善简历内容。'
+  }]
+}
+
+// 显示上传弹窗
+function showUploadResumeDialog() {
+  closeStartDialog()
+  showUploadDialog.value = true
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false  // 重置，允许返回
+}
+
+// 触发文件选择器
+function triggerResumeFileSelect() {
+  resumeFileInput.value?.click()
+}
+
+// 关闭上传弹窗
+function closeUploadDialog() {
+  showUploadDialog.value = false
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false
+}
+
+// 返回上一步（回到开始选择弹窗）
+function backToStartDialog() {
+  showUploadDialog.value = false
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false
+  showStartDialog.value = true
+}
+
+// 重新选择文件
+function reselectResumeFile() {
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false  // 重置，允许返回
+}
+
+// 处理简历图片选择
+function handleResumeImageSelect(event) {
+  const file = event.target.files[0]
+  if (!file) return
+
+  // 验证文件类型
+  if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
+    alert('请上传图片文件（JPG、PNG）或 PDF')
+    return
+  }
+
+  // 验证文件大小（5MB）
+  if (file.size > 5 * 1024 * 1024) {
+    alert('文件大小不能超过 5MB')
+    return
+  }
+
+  resumeImageFile.value = file
+  hasResumeFileSelected.value = true  // 已选择文件，不可返回上一步
+
+  // 检测是否是PDF文件
+  isResumePdf.value = file.type === 'application/pdf'
+
+  // 生成预览（PDF不生成图片预览，只显示图标）
+  if (isResumePdf.value) {
+    resumeImagePreview.value = 'pdf'  // 设置为非空值以触发界面切换
+  } else {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      resumeImagePreview.value = e.target.result
+    }
+    reader.readAsDataURL(file)
+  }
+}
+
+// 解析并保存简历
+async function parseAndSaveResume() {
+  if (!resumeImageFile.value) {
+    alert('请先选择简历图片')
+    return
+  }
+
+  isParsingResume.value = true
+
+  try {
+    // 转换为 base64
+    const reader = new FileReader()
+    reader.readAsDataURL(resumeImageFile.value)
+    reader.onload = async () => {
+      const base64 = reader.result
+
+      try {
+        const response = await fetch('/api/resume/parse_and_save', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ image: base64 })
+        })
+
+        const data = await response.json()
+
+        if (data.success) {
+          // 更新简历数据
+          resumeData.value = data.resume_data
+          closeUploadDialog()
+          // 添加欢迎消息
+          messages.value = [{
+            id: Date.now(),
+            role: 'assistant',
+            content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
+          }]
+        } else {
+          alert('解析失败：' + data.error)
+          // 解析失败，保留状态让用户可以重试
+        }
+      } catch (error) {
+        console.error('解析简历失败:', error)
+        alert('解析简历失败，请稍后重试')
+      } finally {
+        // 重置前端状态
+        isParsingResume.value = false
+        hasResumeFileSelected.value = false
+      }
+    }
+  } catch (error) {
+    console.error('读取文件失败:', error)
+    alert('读取文件失败')
+    isParsingResume.value = false
+    hasResumeFileSelected.value = false
+  }
+}
+
 // 自动滚动到底部，添加丝滑过渡效果
 function scrollToBottom() {
   if (messagesContainer.value) {
@@ -1548,6 +1796,143 @@ watch(
 </script>
 
 <template>
+  <!-- 首次进入选择弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showStartDialog" class="modal-mask">
+        <div class="modal-container start-modal" @click.stop>
+          <div class="modal-header">
+            <div class="header-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+              </svg>
+            </div>
+            <h2>创建简历</h2>
+          </div>
+          <p class="modal-desc">选择一种方式开始创建你的简历</p>
+          <div class="option-list">
+            <button @click="startFromBlank" class="option-item">
+              <div class="optionGraphic graphic-plus">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </div>
+              <div class="option-content">
+                <span class="option-label">从空白创建</span>
+                <span class="option-sublabel">手动填写，逐步完善</span>
+              </div>
+              <svg class="option-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+            <button @click="showUploadResumeDialog" class="option-item primary">
+              <div class="optionGraphic graphic-upload">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </div>
+              <div class="option-content">
+                <span class="option-label">上传已有简历</span>
+                <span class="option-sublabel">支持图片或 PDF，自动解析</span>
+              </div>
+              <svg class="option-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 简历上传弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showUploadDialog" class="modal-mask">
+        <div class="modal-container upload-modal" @click.stop>
+          <div class="modal-header">
+            <div class="header-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+            </div>
+            <h2>上传简历</h2>
+            <div class="modal-actions">
+              <!-- 未选择文件且不在解析中时显示返回按钮 -->
+              <button v-if="!hasResumeFileSelected && !isParsingResume" @click="backToStartDialog" class="modal-back">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="19" y1="12" x2="5" y2="12"></line>
+                  <polyline points="12 19 5 12 12 5"></polyline>
+                </svg>
+                返回
+              </button>
+            </div>
+          </div>
+          <div class="modal-body">
+            <!-- 未选择文件且不在解析中时显示上传框 -->
+            <div v-if="!resumeImagePreview && !isParsingResume" class="upload-box" @click="triggerResumeFileSelect()">
+              <input type="file" accept="image/*,.pdf" @change="handleResumeImageSelect" ref="resumeFileInput" class="hidden-input" />
+              <div class="upload-graphic">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </div>
+              <p class="upload-title">点击上传简历</p>
+              <p class="upload-hint">自动解析并生成结构化简历</p>
+              <span class="upload-formats">支持 JPG、PNG、PDF</span>
+            </div>
+            <!-- 解析中状态显示 -->
+            <div v-if="isParsingResume && !resumeImagePreview" class="parsing-status">
+              <div class="parsing-spinner"></div>
+              <p class="parsing-text">简历正在解析中...</p>
+              <p class="parsing-hint">请稍候，解析完成后将自动显示结果</p>
+            </div>
+            <div v-else-if="!isParsingResume && resumeImagePreview" class="preview-box">
+              <!-- PDF文件预览 -->
+              <div v-if="isResumePdf" class="pdf-preview">
+                <div class="pdf-icon-wrapper">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                  </svg>
+                </div>
+                <p class="pdf-filename">{{ resumeImageFile?.name }}</p>
+                <p class="pdf-hint">PDF文件准备解析</p>
+              </div>
+              <!-- 图片预览 -->
+              <img v-else :src="resumeImagePreview" alt="简历预览" class="preview-img" />
+              <button @click="reselectResumeFile" class="btn-reselect">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                重新选择
+              </button>
+            </div>
+          </div>
+          <div class="modal-footer" v-if="resumeImagePreview || isParsingResume">
+            <button @click="parseAndSaveResume" :disabled="isParsingResume" class="btn-primary full-width">
+              <span v-if="isParsingResume" class="btn-spinner"></span>
+              {{ isParsingResume ? '解析中...' : '开始解析' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   <!-- 顶部导航栏（全屏宽度） -->
   <header class="app-header">
     <div class="header-content">

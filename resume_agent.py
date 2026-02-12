@@ -284,6 +284,71 @@ JD_PARSER_PROMPT = '''# Role
 '''
 
 
+# Resume Full Extract Prompt - 用于完整提取简历图片为JSON（首次上传流程）
+RESUME_FULL_EXTRACT_PROMPT = '''# Role
+你是简历OCR提取专家，负责从图片中完整提取所有简历信息。
+
+# 核心要求
+**逐字提取，不要省略任何内容**。图片中的每一个字、每一行都要完整提取。
+
+# 严格的输出格式
+你必须严格按照以下JSON Schema输出（其中的数组代表可以有多个），直接输出JSON对象：
+
+```json规范参考
+{
+  "photo": "",（留空）
+  "basics": {
+    "name": "姓名",
+    "gender": "性别",
+    "phone": "手机号",
+    "email": "邮箱",
+    "target_position": "期望岗位"
+  },
+  "education": [{
+    "school_name": "学校",
+    "major": "专业",
+    "degree": "学位",
+    "date_range": ["开始时间", "结束时间"],
+    "school_tags": ["标签1", "标签2"],
+    "theses": []
+  }],
+  "work_experience": [{
+    "company_name": "公司",
+    "job_title": "职位",
+    "date_range": ["开始时间", "结束时间"],
+    "job_type": "实习/全职",
+    "details": ["具体工作内容1", "具体工作内容2"]
+  }],
+  "project_experience": [{
+    "project_name": "项目名称",
+    "role": "角色",
+    "date_range": ["开始时间", "结束时间"],
+    "details": ["具体内容1", "具体内容2"]
+  }],
+  "others": {
+    "skills": ["技能1", "技能2"],
+    "certificates": ["证书1", "证书2"],
+    "languages": ["语言"]
+  },
+  "self_evaluation": ["自我评价1", "自我评价2"]
+}
+```
+
+# 严格规则
+1. **只输出JSON**，不要有任何解释、前缀、后缀、markdown代码块标记
+2. **必须包含所有字段**，即使值为空字符串、空数组或空对象
+3. **content 必须是数组**，每一条内容都要独立成数组元素
+4. 时间格式统一为 "YYYY.MM - YYYY.MM" 或 "至今"
+5. 如果图片中没有某字段，设置为 "" 或 []，不要省略
+6. 绝对不要输出 ```json 或 ``` 标记
+7. 绝对不要输出其他任何文字
+
+# 示例
+输入：一张简历图片，包含姓名"张三"，手机"13800138000"，工作经历"2020.01 - 2022.12 在字节跳动担任产品经理"
+输出：{"basics":{"name":"张三","gender":"","phone":"13800138000","email":"","target_position":""},"education":[],"work_experience":[{"company":"字节跳动","position":"产品经理","time":"2020.01 - 2022.12","type":"","content":[]}],"project_experience":[],"others":{"skills":[],"certificates":[],"languages":[]},"self_evaluation":[]}
+'''
+
+
 FORMATTER_PROMPT = """# Role
 你是简历格式化专家，负责将用户的修改意图转化为规范的 JSON 格式，并调用 save_resume 工具保存结果。
 

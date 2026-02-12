@@ -42,6 +42,7 @@ class Resume(Base):
     user_id = Column(Integer, nullable=False, index=True)
     name = Column(String(100), default="默认简历")
     resume_data = Column(JSON, default=dict)
+    parsing_status = Column(String(20), default="none")  # none, parsing, completed, failed
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -113,6 +114,28 @@ def get_user_resume(db, user_id: int) -> dict:
     """获取用户简历"""
     resume = db.query(Resume).filter(Resume.user_id == user_id).first()
     return resume.resume_data if resume else {}
+
+
+def get_parsing_status(db, user_id: int) -> str:
+    """获取简历解析状态"""
+    try:
+        resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+        return resume.parsing_status if resume else "none"
+    except Exception:
+        # 如果表结构有问题，返回默认值
+        return "none"
+
+
+def set_parsing_status(db, user_id: int, status: str):
+    """设置简历解析状态"""
+    resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+    if resume:
+        resume.parsing_status = status
+    else:
+        # 如果简历不存在，先创建
+        resume = Resume(user_id=user_id, parsing_status=status)
+        db.add(resume)
+    db.commit()
 
 
 def save_user_resume(db, user_id: int, data: dict, name: str = "默认简历"):

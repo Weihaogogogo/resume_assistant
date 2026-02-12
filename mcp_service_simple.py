@@ -39,7 +39,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from database import (
     init_db, get_db, create_user, get_user_by_email,
     save_user_resume, get_user_resume, save_user_jd, get_user_jd,
-    check_invite_code, use_invite_code, create_invite_code
+    check_invite_code, use_invite_code, create_invite_code,
+    get_parsing_status, set_parsing_status
 )
 from auth import (
     verify_password, get_password_hash, create_access_token,
@@ -353,17 +354,29 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
     try:
         print(f"[DEBUG] load_resume: user_id={current_user.id}, email={current_user.email}")
         resume_data = get_user_resume(db, current_user.id)
+
+        # 安全获取解析状态
+        try:
+            parsing_status = get_parsing_status(db, current_user.id)
+        except Exception as statusError:
+            print(f"[WARN] get_parsing_status failed: {statusError}, using default")
+            parsing_status = "none"
+
         if isinstance(resume_data, dict) and "error" in resume_data:
             return JSONResponse(content={}, status_code=500)
         # 只打印基本信息，不打印完整 resume_data
         has_resume = bool(resume_data and isinstance(resume_data, dict) and resume_data.get("basics"))
-        print(f"[DEBUG] load_resume: 已加载={has_resume}, keys={list(resume_data.keys()) if resume_data else None}")
-        return JSONResponse(content=resume_data)
+        print(f"[DEBUG] load_resume: 已加载={has_resume}, parsing_status={parsing_status}")
+        return JSONResponse(content={
+            **resume_data,
+            "parsing_status": parsing_status
+        })
     except Exception as e:
         print(f"[ERROR] load_resume: {str(e)}")
         import traceback
         traceback.print_exc()
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        # 返回空简历数据，避免前端崩溃
+        return JSONResponse(content={"parsing_status": "none"}, status_code=200)
 
 
 @app.post("/save_resume")
@@ -501,6 +514,99 @@ async def parse_jd_endpoint(request: Request, current_user = Depends(get_current
         import traceback
         traceback.print_exc()
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/api/resume/parse_and_save")
+async def parse_and_save_resume_endpoint(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    解析简历图片并保存（首次上传流程）
+    """
+    try:
+        import re
+        request_data = await request.json()
+        resume_image = request_data.get('image', '')
+
+        if not resume_image:
+            return JSONResponse(content={"success": False, "error": "未收到图片"}, status_code=400)
+
+        # 提取 base64 并检测文件类型
+        original_data_url = resume_image
+        if resume_image.startswith('data:image') or resume_image.startswith('data:application/pdf'):
+            resume_image = resume_image.split(',')[1]
+
+            # 检测原始文件类型并保持格式
+            if original_data_url.startswith('data:application/pdf'):
+                mime_type = 'application/pdf'
+            elif original_data_url.startswith('data:image/png'):
+                mime_type = 'image/png'
+            elif original_data_url.startswith('data:image/webp'):
+                mime_type = 'image/webp'
+            else:
+                mime_type = 'image/jpeg'  # 默认使用jpeg
+        else:
+            # 如果没有前缀，默认作为图片处理
+            mime_type = 'image/jpeg'
+
+        from resume_agent import jd_parser_llm, RESUME_FULL_EXTRACT_PROMPT
+
+        # 设置解析状态为进行中
+        set_parsing_status(db, current_user.id, "parsing")
+
+        # 构建消息 - 根据文件类型使用正确的MIME类型
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": "请完整提取这份简历中的所有信息，**不要省略任何内容**。"},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{resume_image}"}}
+            ]
+        )
+
+        # 调用 LLM 解析
+        response = await jd_parser_llm.ainvoke([
+            SystemMessage(content=RESUME_FULL_EXTRACT_PROMPT),
+            message
+        ])
+
+        # 清理 JSON
+        content = response.content.strip()
+        content = re.sub(r'^```json\s*', '', content)
+        content = re.sub(r'^```\s*', '', content)
+        content = re.sub(r'\s*```$', '', content)
+
+        try:
+            resume_data = json.loads(content)
+        except json.JSONDecodeError:
+            # 解析失败
+            set_parsing_status(db, current_user.id, "failed")
+            return JSONResponse(content={"success": False, "error": "解析失败", "raw": content}, status_code=500)
+
+        # 保存到数据库
+        from database import save_user_resume
+        save_user_resume(db, current_user.id, resume_data)
+        # 设置解析状态为完成
+        set_parsing_status(db, current_user.id, "completed")
+
+        return JSONResponse(content={
+            "success": True,
+            "resume_data": resume_data,
+            "message": "简历解析并保存成功"
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # 解析失败
+        set_parsing_status(db, current_user.id, "failed")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/resume/parsing_status")
+async def get_parsing_status_endpoint(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+    """获取简历解析状态"""
+    status = get_parsing_status(db, current_user.id)
+    return {"parsing_status": status}
 
 
 @app.post("/export_pdf")
