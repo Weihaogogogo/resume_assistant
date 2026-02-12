@@ -1172,7 +1172,7 @@ const getItemIndex = (type, dataIndex) => {
   background-color: transparent;
   padding: 0.5rem 1rem;
   box-shadow: none;
-  border-bottom: 1px solid #303030;
+  border-bottom: 1px solid #e0e0e0;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -1489,7 +1489,7 @@ const getItemIndex = (type, dataIndex) => {
 .section-title {
   font-size: 1.1em;
   font-weight: 600;
-  margin: 0 0 0.5em 0;
+  margin: 0 0 var(--module-margin, 0.5em) 0;
   color: #212529;
   padding-bottom: 0.25em;
   border-bottom: 2px solid #333;
@@ -1499,7 +1499,7 @@ const getItemIndex = (type, dataIndex) => {
 .education-item,
 .work-item,
 .project-item {
-  margin-bottom: 0.5em;
+  margin-bottom: var(--module-margin, 0.5em);
 }
 .education-header,
 .work-header,
@@ -1585,7 +1585,7 @@ const getItemIndex = (type, dataIndex) => {
 .skill-section,
 .cert-section,
 .lang-section {
-  margin-bottom: 0.5em;
+  margin-bottom: var(--module-margin, 0.5em);
 }
 .skill-list {
   display: flex;

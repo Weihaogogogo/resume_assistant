@@ -62,8 +62,8 @@ class CompressionState:
 compression_state = CompressionState()
 
 # 上下文压缩配置
-MAX_HUMAN_MESSAGES = 15  # 最多保留多少条 HumanMessage
-KEEP_RECENT = 5  # 保留最近多少条不压缩
+MAX_HUMAN_MESSAGES = 50  # 最多保留多少条 HumanMessage
+KEEP_RECENT = 10  # 保留最近多少条不压缩
 
 
 def wait_for_compression():
@@ -150,7 +150,7 @@ class SaveResumeRequest(BaseModel):
 # LLM 上下文压缩
 # =============================================================================
 
-async def compress_context_with_llm(messages, max_summary_length=150):
+async def compress_context_with_llm(messages, max_summary_length=1000):
     """
     使用 LLM 对早期对话进行语义压缩
     """
@@ -352,8 +352,15 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
     加载当前用户的简历数据
     """
     try:
-        print(f"[DEBUG] load_resume: user_id={current_user.id}, email={current_user.email}")
+        print(f"[load_resume] user_id={current_user.id}, email={current_user.email}")
         resume_data = get_user_resume(db, current_user.id)
+
+        # 打印加载的数据
+        if resume_data and isinstance(resume_data, dict):
+            basics = resume_data.get('basics', {})
+            print(f"[load_resume] 加载简历: name={basics.get('name', 'N/A')}, target_position={basics.get('target_position', 'N/A')}")
+        else:
+            print(f"[load_resume] 未找到简历数据")
 
         # 安全获取解析状态
         try:
@@ -364,9 +371,6 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
 
         if isinstance(resume_data, dict) and "error" in resume_data:
             return JSONResponse(content={}, status_code=500)
-        # 只打印基本信息，不打印完整 resume_data
-        has_resume = bool(resume_data and isinstance(resume_data, dict) and resume_data.get("basics"))
-        print(f"[DEBUG] load_resume: 已加载={has_resume}, parsing_status={parsing_status}")
         return JSONResponse(content={
             **resume_data,
             "parsing_status": parsing_status
@@ -729,25 +733,35 @@ async def chat_endpoint(
         initial_resume_data = resume_data if resume_data else (get_user_resume(db, current_user.id) or {})
         initial_jd_data = jd_data if jd_data else (get_user_jd(db, current_user.id) or {})
 
+        # 从数据库获取待确认状态
+        from database import get_pending_confirmation
+        initial_pending_confirmation = get_pending_confirmation(db, current_user.id, session_id)
+        if initial_pending_confirmation:
+            print(f"[InitState] 从数据库加载 pending_confirmation: confirm_id={initial_pending_confirmation.get('confirm_id')}")
+        else:
+            print(f"[InitState] 从数据库加载 pending_confirmation: None")
+
         # 创建初始状态
-        # 用户点击确认时：清除 pending_confirmation，从 formatter_llm 开始
         # 注意：当用户点击确认时，initial_state 包含完整的消息历史
         # 这样 tool_node 和 conversation_llm 才能正确访问上下文
         initial_state = {
             "messages": all_messages,  # 保留完整的历史消息
             "resume_data": initial_resume_data,
             "jd_data": initial_jd_data,
-            "pending_confirmation": None,  # 用户点击确认时清除 pending_confirmation
+            "pending_confirmation": initial_pending_confirmation,  # 从数据库加载待确认状态
             "user_id": current_user.id  # 添加用户ID，用于数据隔离
         }
-        print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息")
+        print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息, pending_confirmation={initial_state.get('pending_confirmation') is not None}")
         for i, msg in enumerate(all_messages):
             print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
 
         async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, pending_confirmation=None):
             """异步保存状态到数据库，不阻塞 SSE 响应"""
             try:
-                print(f"[SaveStateAsync] 开始保存状态")
+                if pending_confirmation:
+                    print(f"[SaveStateAsync] 开始保存状态, confirm_id={pending_confirmation.get('confirm_id')}")
+                else:
+                    print(f"[SaveStateAsync] 开始保存状态, pending_confirmation=None")
 
                 # 从 messages_list 中提取 HumanMessage 和 AIMessage（跳过 ToolMessage）
                 all_human = [msg for msg in messages_list if isinstance(msg, HumanMessage)]
@@ -895,6 +909,16 @@ async def chat_endpoint(
                                 if "pending_confirmation" in output and output["pending_confirmation"]:
                                     confirm_data = output["pending_confirmation"]
                                     confirm_msg_id = str(uuid.uuid4())
+                                    # 同步保存 pending_confirmation 到数据库，确保立即可用
+                                    try:
+                                        from database import save_conversation_context, get_conversation_context
+                                        # 先获取当前压缩上下文
+                                        current_context = get_conversation_context(db, current_user.id, session_id)
+                                        # 保存 pending_confirmation，保留当前上下文
+                                        save_conversation_context(db, current_user.id, session_id, current_context, confirm_data)
+                                        print(f"[SSE] 同步保存 pending_confirmation: confirm_id={confirm_data.get('confirm_id')}")
+                                    except Exception as e:
+                                        print(f"[Warning] 同步保存 pending_confirmation 失败: {e}")
                                     pending_confirmation_result = confirm_data  # 保存待确认状态
                                     yield 'data: ' + json.dumps({
                                         "type": "confirm",
@@ -992,17 +1016,27 @@ async def confirm_endpoint(
         if pending_confirmation.get("confirm_id") != confirm_id:
             return JSONResponse(content={"error": "确认ID不匹配"}, status_code=400)
 
-        # 从数据库获取简历数据
-        resume_data = get_user_resume(db, current_user.id) or {}
-
         # 根据操作处理
         if action == "confirm":
-            # 保存简历
-            from tools import update_resume
-            result = update_resume(resume_data, user_id=current_user.id)
+            # 从 pending_confirmation 获取修改后的简历数据
+            tool_args = pending_confirmation.get("tool_args", {})
+            content = tool_args.get("content", "")
 
-            # 保存到数据库
-            save_user_resume(db, current_user.id, resume_data)
+            if not content:
+                return JSONResponse(content={"error": "没有找到修改后的简历数据"}, status_code=400)
+
+            # 解析 JSON
+            import json as json_module
+            try:
+                updated_resume_data = json_module.loads(content)
+                print(f"[Confirm] 解析修改后的简历数据成功，包含 {len(updated_resume_data)} 个顶级字段")
+            except json_module.JSONDecodeError as e:
+                return JSONResponse(content={"error": f"简历数据格式错误: {str(e)}"}, status_code=400)
+
+            # 保存修改后的简历数据
+            from tools import update_resume
+            result = update_resume(updated_resume_data, user_id=current_user.id)
+            print(f"[Confirm] 保存结果: {result}")
 
             # 清除 pending_confirmation 状态
             clear_pending_confirmation(db, current_user.id, session_id)

@@ -2705,7 +2705,7 @@ watch(
   background-color: rgb(249, 245, 242);
   color: var(--text-primary);
   box-shadow: none;
-  border-bottom: 1px solid #303030;
+  border-bottom: 1px solid #e0e0e0;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -2874,7 +2874,7 @@ watch(
   padding: 0;
   overflow: hidden;
   position: relative;
-  border-right: 1px solid #303030;
+  border-right: 1px solid #e0e0e0;
   height: 100%; /* 确保高度填满 */
 }
 

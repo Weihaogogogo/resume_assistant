@@ -106,46 +106,259 @@ function onBlur() {
 function handleCtrlB(e) {
   e.preventDefault()
   const selection = window.getSelection()
-  if (selection.rangeCount > 0) {
-    const range = selection.getRangeAt(0)
-    let selectedText = range.toString()
+  if (selection.rangeCount === 0) return
 
-    if (selectedText) {
-      // 检查选中的文字是否已经在一个 <b> 标签内
-      const container = range.commonAncestorContainer
-      const parentB = container.nodeType === Node.TEXT_NODE
-        ? container.parentElement.closest('b')
-        : container.closest('b')
+  const range = selection.getRangeAt(0)
+  const selectedText = range.toString()
+  if (!selectedText) return
 
-      if (parentB) {
-        // 取消加粗：移除 <b> 标签，保留文字内容
-        const textNode = document.createTextNode(parentB.textContent)
-        parentB.parentNode.replaceChild(textNode, parentB)
+  // 使用浏览器原生的 execCommand('bold') 命令
+  // 这会自动处理各种边界情况
+  document.execCommand('bold', false, null)
 
-        // 恢复选区
-        const newRange = document.createRange()
-        newRange.setStart(textNode, 0)
-        newRange.setEnd(textNode, textNode.textContent.length)
-        selection.removeAllRanges()
-        selection.addRange(newRange)
-      } else {
-        // 添加加粗：插入 <b> 标签
-        const boldNode = document.createElement('b')
-        boldNode.textContent = selectedText
+  // 更新行数
+  updateLineCount()
+}
 
-        range.deleteContents()
-        range.insertNode(boldNode)
+// 获取文本节点在父元素中的相对偏移
+function getRelativeOffset(textNode, parentElement, absoluteOffset) {
+  let offset = 0
+  for (const child of parentElement.childNodes) {
+    if (child === textNode) {
+      return offset + absoluteOffset
+    }
+    if (child.nodeType === Node.TEXT_NODE) {
+      offset += child.textContent.length
+    }
+  }
+  return null
+}
 
-        // 移动光标到加粗文本后面
-        const newRange = document.createRange()
-        newRange.setStartAfter(boldNode)
-        newRange.setEndAfter(boldNode)
-        selection.removeAllRanges()
-        selection.addRange(newRange)
-      }
+// 对整个选区取消加粗
+function toggleUnbold(editor, range, selectedText) {
+  const selection = window.getSelection()
 
-      // 更新行数
-      updateLineCount()
+  // 获取选区的边界
+  const startContainer = range.startContainer
+  const startOffset = range.startOffset
+  const endContainer = range.endContainer
+  const endOffset = range.endOffset
+
+  // 如果是同一个文本节点，直接在节点内处理
+  if (startContainer === endContainer && startContainer.nodeType === Node.TEXT_NODE) {
+    const text = startContainer.textContent
+    const beforeText = text.substring(0, startOffset)
+    const selectedTextContent = text.substring(startOffset, endOffset)
+    const afterText = text.substring(endOffset)
+
+    // 将选中部分的 <b> 标签替换为纯文本
+    // 创建一个临时容器来处理
+    const tempDiv = document.createElement('div')
+    tempDiv.textContent = selectedTextContent
+
+    // 找到所有被选中的文本节点部分
+    processTextNodeForUnbold(startContainer, startOffset, endOffset)
+  } else {
+    // 跨多个节点的情况：遍历选区内的所有节点
+    processRangeForUnbold(range)
+  }
+
+  // 合并相邻的 <b> 标签
+  mergeAdjacentBoldTags(editor)
+
+  // 恢复选区
+  try {
+    const newRange = document.createRange()
+    newRange.setStart(startContainer, startOffset)
+    newRange.setEnd(endContainer, endOffset)
+    selection.removeAllRanges()
+    selection.addRange(newRange)
+  } catch (e) {
+    console.warn('Failed to restore selection:', e)
+  }
+}
+
+// 处理单个文本节点的取消加粗
+function processTextNodeForUnbold(textNode, start, end) {
+  const parent = textNode.parentElement
+  if (!parent) return
+
+  // 检查父元素是否是 <b>
+  if (parent.tagName === 'B' || parent.tagName === 'STRONG') {
+    const grandParent = parent.parentNode
+    if (!grandParent) return
+
+    const text = textNode.textContent
+    const beforeText = text.substring(0, start)
+    const selectedTextContent = text.substring(start, end)
+    const afterText = text.substring(end)
+
+    // 构建新的文档片段
+    const fragment = document.createDocumentFragment()
+
+    // 前面的文本
+    if (beforeText) {
+      fragment.appendChild(document.createTextNode(beforeText))
+    }
+
+    // 选中的文本 - 去掉 <b> 标签
+    if (selectedTextContent) {
+      fragment.appendChild(document.createTextNode(selectedTextContent))
+    }
+
+    // 后面的文本
+    if (afterText) {
+      fragment.appendChild(document.createTextNode(afterText))
+    }
+
+    grandParent.replaceChild(fragment, parent)
+  }
+}
+
+// 处理跨多个节点的选区取消加粗
+function processRangeForUnbold(range) {
+  // 创建一个 TreeWalker 来遍历选区内容
+  const container = range.commonAncestorContainer
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    null,
+    false
+  )
+
+  const startContainer = range.startContainer
+  const endContainer = range.endContainer
+
+  let node = walker.currentNode
+  while (node) {
+    // 检查这个节点是否在选区内
+    if (isNodeInRange(node, range)) {
+      processTextNodeForUnboldInRange(node, range)
+    }
+    node = walker.nextNode()
+  }
+}
+
+// 检查节点是否在选区内
+function isNodeInRange(node, range) {
+  const nodeRange = document.createRange()
+  try {
+    nodeRange.selectNode(node)
+    return range.compareBoundaryPoints(Range.END_TO_START, nodeRange) <= 0 &&
+           range.compareBoundaryPoints(Range.START_TO_END, nodeRange) >= 0
+  } catch (e) {
+    return false
+  }
+}
+
+// 处理范围内的文本节点取消加粗
+function processTextNodeForUnboldInRange(textNode, range) {
+  const parent = textNode.parentElement
+  if (!parent) return
+
+  // 检查父元素是否是 <b>
+  if (parent.tagName !== 'B' && parent.tagName !== 'STRONG') return
+
+  // 计算在文本节点中的偏移
+  const text = textNode.textContent
+  let start = 0
+  let end = text.length
+
+  if (textNode === range.startContainer) {
+    start = range.startOffset
+  }
+  if (textNode === range.endContainer) {
+    end = range.endOffset
+  }
+
+  if (start >= end) return
+
+  const grandParent = parent.parentNode
+  if (!grandParent) return
+
+  const beforeText = text.substring(0, start)
+  const selectedTextContent = text.substring(start, end)
+  const afterText = text.substring(end)
+
+  // 构建新的文档片段
+  const fragment = document.createDocumentFragment()
+
+  if (beforeText) {
+    fragment.appendChild(document.createTextNode(beforeText))
+  }
+
+  if (selectedTextContent) {
+    fragment.appendChild(document.createTextNode(selectedTextContent))
+  }
+
+  if (afterText) {
+    fragment.appendChild(document.createTextNode(afterText))
+  }
+
+  grandParent.replaceChild(fragment, parent)
+}
+
+// 对整个选区加粗
+function toggleBold(editor, range, selectedText) {
+  const selection = window.getSelection()
+
+  // 直接用 range.extractContents() 提取选区内容，然后包裹 <b>
+  const contents = range.extractContents()
+  const b = document.createElement('b')
+  b.appendChild(contents)
+  range.insertNode(b)
+
+  // 合并相邻的 <b> 标签
+  mergeAdjacentBoldTags(editor)
+
+  // 恢复选区到加粗文本之后
+  try {
+    const newRange = document.createRange()
+    newRange.setStartAfter(b)
+    newRange.setEndAfter(b)
+    selection.removeAllRanges()
+    selection.addRange(newRange)
+  } catch (e) {
+    console.warn('Failed to restore selection:', e)
+  }
+}
+
+// 收集所有 <b> 标签及其在编辑器中的位置
+function collectBTags(node, bTags, parentElement = null) {
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const isB = node.tagName === 'B' || node.tagName === 'STRONG'
+    const currentParent = isB ? node : parentElement
+
+    if (isB) {
+      // 计算 <b> 在整个编辑器中的位置
+      const tempRange = document.createRange()
+      tempRange.selectNodeContents(editorRef.value)
+      tempRange.setEnd(node, 0)
+      const bStart = tempRange.toString().length
+
+      bTags.push({
+        element: node,
+        start: bStart,
+        end: bStart + node.textContent.length
+      })
+    }
+
+    node.childNodes.forEach(child => collectBTags(child, bTags, currentParent))
+  }
+}
+
+// 合并相邻的 <b> 标签
+function mergeAdjacentBoldTags(editor) {
+  const bTags = editor.querySelectorAll('b')
+  for (let i = 0; i < bTags.length; i++) {
+    const b = bTags[i]
+    if (!b.parentNode) continue
+
+    const nextSibling = b.nextSibling
+    if (nextSibling && nextSibling.nodeType === Node.ELEMENT_NODE &&
+        (nextSibling.tagName === 'B' || nextSibling.tagName === 'STRONG')) {
+      b.textContent = b.textContent + nextSibling.textContent
+      nextSibling.remove()
     }
   }
 }

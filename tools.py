@@ -82,8 +82,10 @@ def update_resume(data: dict, user_id: int = None, db: Session = None) -> str:
             return "错误：无法确定用户身份，请先登录"
 
         save_user_resume(db, user_id, data)
+        db.commit()  # 显式提交事务
         return "简历已成功保存到数据库"
     except Exception as e:
+        db.rollback()  # 回滚事务
         return f"保存失败：{str(e)}"
     finally:
         if db:

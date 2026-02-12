@@ -140,14 +140,22 @@ def set_parsing_status(db, user_id: int, status: str):
 
 def save_user_resume(db, user_id: int, data: dict, name: str = "默认简历"):
     """保存用户简历"""
+    print(f"[save_user_resume] 开始保存，用户ID={user_id}")
+    print(f"[save_user_resume] 传入 data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+    
+    # 先获取现有数据
     resume = db.query(Resume).filter(Resume.user_id == user_id).first()
     if resume:
+        print(f"[save_user_resume] 现有数据存在，basics.name: {resume.resume_data.get('basics', {}).get('name', 'N/A')}")
+        print(f"[save_user_resume] 新数据 basics.name: {data.get('basics', {}).get('name', 'N/A')}")
         resume.resume_data = data
         resume.name = name
     else:
+        print(f"[save_user_resume] 创建新简历")
         resume = Resume(user_id=user_id, resume_data=data, name=name)
         db.add(resume)
     db.commit()
+    print(f"[save_user_resume] 保存完成")
     return resume
 
 
