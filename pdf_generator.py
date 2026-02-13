@@ -20,12 +20,13 @@ def format_markdown(text: str) -> str:
     return text
 
 
-def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
+def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = None) -> str:
     """将简历数据渲染为HTML
 
     Args:
         resume_data: 简历数据字典
         style: 样式参数，包括marginTop, marginBottom, marginLeft, marginRight, moduleMargin, lineHeight, fontSize
+        photo: 证件照base64编码（可选，如果为None则从resume_data中提取）
     """
     # 默认样式
     style = style or {}
@@ -39,14 +40,19 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
 
     html_parts = []
 
+    # 获取证件照（优先使用参数，其次使用resume_data）
+    display_photo = photo
+    if not display_photo and resume_data.get("basics"):
+        display_photo = resume_data["basics"].get("photo", "")
+
     # 个人信息
     if resume_data.get("basics"):
         basics = resume_data["basics"]
         html_parts.append('<div class="personal-info">')
         
         # 证件照使用绝对定位（不参与居中计算）
-        if basics.get("photo"):
-            html_parts.append(f'<img src="{basics["photo"]}" class="profile-photo" alt="证件照" />')
+        if display_photo:
+            html_parts.append(f'<img src="{display_photo}" class="profile-photo" alt="证件照" />')
         
         # 姓名
         html_parts.append(f'<h1 class="name">{basics.get("name", "姓名未填写")}</h1>')
@@ -591,17 +597,18 @@ def render_resume_to_html(resume_data: dict, style: dict = None) -> str:
     return full_html
 
 
-def generate_pdf(resume_data: dict, style: dict = None) -> bytes:
+def generate_pdf(resume_data: dict, style: dict = None, photo: str = None) -> bytes:
     """
     根据简历数据生成PDF
 
     Args:
         resume_data: 简历数据字典
         style: 样式参数（可选）
+        photo: 证件照base64编码（可选）
 
     Returns:
         PDF文件的二进制数据
     """
-    html_content = render_resume_to_html(resume_data, style)
+    html_content = render_resume_to_html(resume_data, style, photo)
     pdf = HTML(string=html_content, base_url=os.getcwd()).write_pdf()
     return pdf

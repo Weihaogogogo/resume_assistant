@@ -42,6 +42,7 @@ class Resume(Base):
     user_id = Column(Integer, nullable=False, index=True)
     name = Column(String(100), default="默认简历")
     resume_data = Column(JSON, default=dict)
+    photo = Column(Text, default="")
     parsing_status = Column(String(20), default="none")  # none, parsing, completed, failed
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -138,25 +139,49 @@ def set_parsing_status(db, user_id: int, status: str):
     db.commit()
 
 
-def save_user_resume(db, user_id: int, data: dict, name: str = "默认简历"):
-    """保存用户简历"""
+def save_user_resume(db, user_id: int, data: dict, name: str = "默认简历", photo: str = None):
+    """保存用户简历
+    
+    Args:
+        db: 数据库会话
+        user_id: 用户ID
+        data: 简历数据JSON
+        name: 简历名称
+        photo: 证件照base64编码（可选，如果为None则从data中提取）
+    """
     print(f"[save_user_resume] 开始保存，用户ID={user_id}")
     print(f"[save_user_resume] 传入 data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
     
-    # 先获取现有数据
-    resume = db.query(Resume).filter(Resume.user_id == user_id).first()
-    if resume:
-        print(f"[save_user_resume] 现有数据存在，basics.name: {resume.resume_data.get('basics', {}).get('name', 'N/A')}")
+    # 先获取现有数据（用于保留原有证件照）
+    existing_resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+    existing_photo = existing_resume.photo if existing_resume and existing_resume.photo else ""
+    
+    # 提取并分离证件照
+    if photo is None:
+        photo = data.get('basics', {}).get('photo', '')
+    
+    # 如果新数据没有 photo但数据库已有 photo，保留原有证件照
+    if not photo and existing_photo:
+        photo = existing_photo
+    
+    # 从 data 中移除 photo 字段
+    if data and 'basics' in data:
+        data = {**data, 'basics': {**data.get('basics', {})}}
+        data['basics'].pop('photo', None)
+    
+    if existing_resume:
+        print(f"[save_user_resume] 现有数据存在，basics.name: {existing_resume.resume_data.get('basics', {}).get('name', 'N/A')}")
         print(f"[save_user_resume] 新数据 basics.name: {data.get('basics', {}).get('name', 'N/A')}")
-        resume.resume_data = data
-        resume.name = name
+        existing_resume.resume_data = data
+        existing_resume.name = name
+        existing_resume.photo = photo
     else:
         print(f"[save_user_resume] 创建新简历")
-        resume = Resume(user_id=user_id, resume_data=data, name=name)
+        resume = Resume(user_id=user_id, resume_data=data, name=name, photo=photo)
         db.add(resume)
     db.commit()
     print(f"[save_user_resume] 保存完成")
-    return resume
+    return existing_resume if existing_resume else resume
 
 
 def get_user_jd(db, user_id: int) -> dict:

@@ -194,6 +194,33 @@ CONVERSATION_PROMPT = """
 
 # 工具调用规则
 - **save_resume_tool**：当你给出了完整的优化建议、可以达到修改标准时，需要输出完整的修改建议（不要只输出部分的改动点，而是要输出要修改的部分的前后对比），且调用此工具。你需要将完整的简历JSON作为参数传入。调用后，系统会自动在前端显示确认框，用户点击确认后才会实际保存。
+- 当调用工具时，传入的JSON格式如下：
+```json
+{
+  "type": "object",
+  "properties": {
+    "company": { "type": "string", "description": "公司名称" },
+    "position": { "type": "string", "description": "职位名称" },
+    "department": { "type": "string", "description": "部门/团队" },
+    "location": { "type": "string", "description": "工作地点" },
+    "job_type": { "type": "string", "description": "全职/实习" },
+    "salary": { "type": "string", "description": "薪资范围" },
+    "description": { "type": "string", "description": "职位描述（核心职责）" },
+    "requirements": {
+      "type": "object",
+      "properties": {
+        "education": { "type": "string", "description": "学历要求" },
+        "experience": { "type": "string", "description": "经验要求" },
+        "skills": { "type": "array", "items": { "type": "string" }, "description": "技能要求" },
+        "language": { "type": "string", "description": "语言要求" }
+      }
+    },
+    "preferred_qualifications": { "type": "array", "items": { "type": "string" }, "description": "优先条件" },
+    "highlights": { "type": "array", "items": { "type": "string" }, "description": "JD亮点/核心关键词" }
+  },
+  "required": ["company", "position"]
+}
+```
 
 # 重要规则
 - **重要** 当 just_saved=True（简历刚保存）时，说明简历已经修改完成了，不要调用任何工具。
@@ -201,16 +228,7 @@ CONVERSATION_PROMPT = """
 - **重要** 严禁在聊天内容中输出JSON格式内容。
 - **重要** 禁止构造虚假的修改建议，必须基于用户实际提供的内容。
 - 绝对禁止说："已保存"、"已修改"、"正在为你更新"。
-- 绝对禁止提及 JSON、Key、Value 等技术术语。
-
-# 简历模块格式说明（供参考）
-**注意**：括号内标注"数组"的字段均为数组格式，如`["条目1", "条目2"]`。
-- basics: 基本信息（姓名、性别、手机、邮箱、期望岗位）
-- education: 教育背景（学校、专业、学历、时间、标签（如985/211/双一流/强基计划等等）、论文）
-- work_experience: 工作经历（公司、职位、时间、类型、具体内容（数组））
-- project_experience: 项目经历（项目名称、角色、时间、具体内容（数组））
-- others: 其他信息（技能（数组）、证书（数组）、语言（数组））
-- self_evaluation: 自我评价（数组）
+- 当输出文本时，绝对禁止提及 JSON、Key、Value 等技术术语。
 
 请根据用户的具体问题和当前简历内容，给出专业、有针对性的回复。"""
 
@@ -500,6 +518,12 @@ async def conversation_node(state: AgentState) -> dict:
     for msg in state.messages:
         if isinstance(msg, ToolMessage):
             continue  # 跳过 ToolMessage
+        elif isinstance(msg, HumanMessage):
+            # 跳过确认消息（不作为 LLM 输入，但保留在数据库中）
+            msg_content = getattr(msg, 'content', '') or ''
+            if '[CONFIRM_REPLY:' in msg_content:
+                continue
+            llm_messages.append(msg)
         elif isinstance(msg, AIMessage):
             if msg.tool_calls:
                 # 如果 AIMessage 有 tool_calls，清空它们（工具会在 tool_node 中执行）
@@ -522,25 +546,50 @@ async def conversation_node(state: AgentState) -> dict:
         print("[Debug] 已添加 just_saved 提示给 LLM")
 
     # 调用 LLM
+    print(f"[conversation_llm] 开始调用 LLM, messages 数量: {len(messages)}")
+    print(f"[conversation_llm] system message 长度: {len(messages[0].content) if messages else 0}")
     try:
         conversation_llm_with_tools = conversation_llm.bind_tools(
             conversation_tools,
             tool_choice="auto"
         )
         # 不要添加 stop 序列，否则可能导致工具名称被截断
-        async with asyncio.timeout(60.0):
+        # 增加超时时间到120秒，因为上下文可能较大
+        async with asyncio.timeout(120.0):
             response = await conversation_llm_with_tools.ainvoke(messages)
     except asyncio.TimeoutError:
+        print(f"[conversation_llm] LLM 调用超时! messages 数量: {len(messages)}")
         raise TimeoutError("LLM 调用超时，请稍后重试")
     except Exception as e:
+        print(f"[conversation_llm] LLM 调用失败: {str(e)}")
         raise RuntimeError(f"LLM 调用失败: {str(e)}")
 
     elapsed_time = time.time() - start_time
-    # 打印 LLM 输出
+    # 打印 LLM 输出（完整信息）
     print("LLM Output:")
     print(f"  content: {repr(response.content)[:200]}")
-    if hasattr(response, 'tool_calls') and response.tool_calls:
-        print(f"  tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in response.tool_calls]}")
+
+    # 检查 tool_calls
+    print(f"  === Tool Calls 检查 ===")
+    print(f"  hasattr(response, 'tool_calls'): {hasattr(response, 'tool_calls')}")
+    if hasattr(response, 'tool_calls'):
+        print(f"  response.tool_calls: {response.tool_calls}")
+        print(f"  bool(response.tool_calls): {bool(response.tool_calls)}")
+        if response.tool_calls:
+            print(f"  tool_calls 数量: {len(response.tool_calls)}")
+            for i, tc in enumerate(response.tool_calls):
+                print(f"    tool_call[{i}]: {tc}")
+                print(f"    tool_call[{i}] type: {type(tc)}")
+
+    # 检查 invalid_tool_calls
+    print(f"  hasattr(response, 'invalid_tool_calls'): {hasattr(response, 'invalid_tool_calls')}")
+    if hasattr(response, 'invalid_tool_calls'):
+        print(f"  response.invalid_tool_calls: {response.invalid_tool_calls}")
+
+    # 检查 additional_kwargs
+    print(f"  hasattr(response, 'additional_kwargs'): {hasattr(response, 'additional_kwargs')}")
+    if hasattr(response, 'additional_kwargs'):
+        print(f"  response.additional_kwargs: {response.additional_kwargs}")
     print(f"=== [Node] conversation_llm [结束] 耗时: {elapsed_time:.2f}s ===\n")
 
     # 如果原始消息中有带 tool_calls 的 AIMessage，清除它们
@@ -612,6 +661,13 @@ async def tool_node(state: AgentState) -> dict:
     执行 LLM 调用的工具（如 save_resume_tool）
     支持延迟确认流程：当调用 save_resume_tool 时，不立即保存，而是触发前端确认
     """
+    print(f"\n=== [Node] tool_node [被调用] ===")
+    print(f"state.messages 数量: {len(state.messages)}")
+    if state.messages:
+        last_msg = state.messages[-1]
+        print(f"最后一条消息类型: {type(last_msg).__name__}")
+        if hasattr(last_msg, 'tool_calls'):
+            print(f"最后一条消息 tool_calls: {last_msg.tool_calls}")
     debug_print_state(state, "tool_node_ENTER")
     
     start_time = time.time()
@@ -848,15 +904,24 @@ def route_after_conversation(state: AgentState) -> str:
         'tool_node': 需要执行工具
         END: 对话结束
     """
+    print(f"\n=== [Route] route_after_conversation [开始] ===")
     if not state.messages:
+        print("[Route] 无消息，返回 END")
         return END
 
     last_message = state.messages[-1]
-    
+    has_tool_calls = hasattr(last_message, 'tool_calls') and last_message.tool_calls
+    print(f"[Route] last_message type: {type(last_message).__name__}")
+    print(f"[Route] has_tool_calls: {has_tool_calls}")
+    if has_tool_calls:
+        print(f"[Route] tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in last_message.tool_calls]}")
+
     # 检查是否有工具调用
-    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+    if has_tool_calls:
+        print("[Route] 路由到 tool_node")
         return "tool_node"
 
+    print("[Route] 路由到 END")
     return END  # 无工具调用，结束对话
 
 
@@ -912,16 +977,12 @@ graph_builder.set_conditional_entry_point(entry_router)
 # tool_node → conversation_llm / END
 # 根据状态决定下一个节点
 def tool_node_router(state: AgentState) -> str:
-    # 如果刚保存了简历，返回 conversation_llm 输出结束语
-    if getattr(state, 'just_saved', False):
-        return "conversation_llm"
-    
     # 如果有待确认状态，返回 END（等待前端确认）
     if getattr(state, 'pending_confirmation', None):
         return END
-    
-    # 默认结束
-    return END
+
+    # 默认返回 conversation_llm 生成结束语
+    return "conversation_llm"
 
 graph_builder.add_conditional_edges(
     "tool_node",

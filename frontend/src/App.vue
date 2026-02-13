@@ -196,12 +196,26 @@ onMounted(() => {
     // 降级方案：使用 window resize 事件
     window.addEventListener('resize', checkMobileView)
   }
+
+  // 监听聊天容器滚动事件（带节流）
+  // 使用 nextTick 确保 DOM 已挂载
+  nextTick(() => {
+    if (messagesContainer.value) {
+      messagesContainer.value.addEventListener('scroll', handleScroll)
+      console.log('[DEBUG] 滚动监听已添加')
+    } else {
+      console.log('[DEBUG] messagesContainer 未找到')
+    }
+  })
 })
 
 // 清理监听器
 onUnmounted(() => {
   window.removeEventListener('storage', handleStorageChange)
   stopParsingStatusPoll()
+  if (messagesContainer.value) {
+    messagesContainer.value.removeEventListener('scroll', handleScroll)
+  }
   if (resizeObserver) {
     resizeObserver.disconnect()
   } else {
@@ -268,6 +282,82 @@ async function loadInitialData() {
 
     // 停止轮询（如果之前在轮询中）
     stopParsingStatusPoll()
+
+    // 加载JD数据
+    try {
+      const jdResponse = await fetch('/load_jd', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({})
+      })
+      if (jdResponse.status === 401) {
+        logout()
+        return
+      }
+      const jdResult = await jdResponse.json()
+      if (jdResult && Object.keys(jdResult).length > 0) {
+        jdData.value = jdResult
+      }
+    } catch (jdError) {
+      console.log('暂无岗位数据')
+    }
+
+    // 检查是否首次进入（无简历且无聊天记录）
+    // 修正判断逻辑：检查basics中是否有有效字段
+    const { parsing_status, basics, ...rest } = data
+    const hasResume = basics && (basics.name || basics.target_position || Object.keys(rest).length > 0)
+    console.log(`[DEBUG] loadInitialData: hasResume=${hasResume}, basics=${JSON.stringify(basics)}`)
+
+    // 加载对话历史
+    try {
+      const convResponse = await fetch('/load_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionId.value })
+      })
+      if (convResponse.status === 401) {
+        logout()
+        return
+      }
+      const convData = await convResponse.json()
+      const hasChatHistory = Array.isArray(convData) && convData.length > 0
+      console.log(`[DEBUG] loadInitialData: hasChatHistory=${hasChatHistory}`)
+
+      // 首次进入检测：无简历且无聊天记录
+      if (!hasResume && !hasChatHistory) {
+        console.log('[DEBUG] 首次进入，显示开始选择弹窗')
+        showStartDialog.value = true
+        return
+      }
+
+      if (hasChatHistory) {
+        messages.value = convData
+      } else {
+        messages.value = [{
+          id: Date.now(),
+          role: 'assistant',
+          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历信息等。简历内容、修改'
+        }]
+      }
+    } catch (convError) {
+      messages.value = [{
+        id: Date.now(),
+        role: 'assistant',
+        content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
+      }]
+    }
+  } catch (error) {
+    console.error('加载数据失败:', error)
+    messages.value = [{
+      id: Date.now(),
+      role: 'assistant',
+      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
+    }]
+  } finally {
+    isLoadingInitialData.value = false
+    console.log('[DEBUG] loadInitialData: 完成')
+  }
+}
 
 // 轮询检查解析状态
 async function pollParsingStatus() {
@@ -348,79 +438,6 @@ async function loadResumeData() {
     }
   } catch (error) {
     console.error('加载简历数据失败:', error)
-  }
-}
-
-    // 检查是否首次进入（无简历且无聊天记录）
-    // 排除 parsing_status 字段来判断是否有真实简历数据
-    const { parsing_status, ...resumeContent } = data
-    const hasResume = resumeContent && Object.keys(resumeContent).length > 0
-
-    // 加载JD数据
-    try {
-      const jdResponse = await fetch('/load_jd', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({})
-      })
-      if (jdResponse.status === 401) {
-        logout()
-        return
-      }
-      const jdResult = await jdResponse.json()
-      if (jdResult && Object.keys(jdResult).length > 0) {
-        jdData.value = jdResult
-      }
-    } catch (jdError) {
-      console.log('暂无岗位数据')
-    }
-
-    // 加载对话历史
-    try {
-      const convResponse = await fetch('/load_conversation', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: sessionId.value })
-      })
-      if (convResponse.status === 401) {
-        logout()
-        return
-      }
-      const convData = await convResponse.json()
-      const hasChatHistory = Array.isArray(convData) && convData.length > 0
-
-      // 首次进入检测：无简历且无聊天记录
-      if (!hasResume && !hasChatHistory) {
-        showStartDialog.value = true
-        return
-      }
-
-      if (hasChatHistory) {
-        messages.value = convData
-      } else {
-        messages.value = [{
-          id: Date.now(),
-          role: 'assistant',
-          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-        }]
-      }
-    } catch (convError) {
-      messages.value = [{
-        id: Date.now(),
-        role: 'assistant',
-        content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-      }]
-    }
-  } catch (error) {
-    console.error('加载数据失败:', error)
-    messages.value = [{
-      id: Date.now(),
-      role: 'assistant',
-      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
-    }]
-  } finally {
-    isLoadingInitialData.value = false
-    console.log('[DEBUG] loadInitialData: 完成')
   }
 }
 
@@ -582,6 +599,7 @@ async function sendMessage() {
                   }
                 }
               } else if (data.type === 'final') {
+                console.log('[前端] 收到 final 事件, isLoading before:', isLoading.value, 'isResponding:', isResponding.value)
                 // 停止加载文案切换
                 if (loadingTextInterval) {
                   clearTimeout(loadingTextInterval)
@@ -642,8 +660,10 @@ async function sendMessage() {
                 // 标记有 confirm area，禁用输入
                 hasConfirmArea.value = true
               } else if (data.type === 'end') {
+                console.log('[前端] 收到 end 事件, isResponding before:', isResponding.value, 'isLoading:', isLoading.value)
                 // 结束信号，关闭连接
                 isResponding.value = false
+                console.log('[前端] isResponding 已设置为 false')
                 // 只在流式响应结束时调用一次updateResumeData()
                 updateResumeData()
                 // 更新会话ID并保存到localStorage
@@ -1722,6 +1742,7 @@ async function parseAndSaveResume() {
   }
 
   isParsingResume.value = true
+  resumeImagePreview.value = ''
 
   try {
     // 转换为 base64
@@ -1781,6 +1802,46 @@ function scrollToBottom() {
   }
 }
 
+// 滑动至底部按钮状态
+const showScrollToBottomButton = ref(false)
+let scrollThrottleTimer = null
+
+// 检查是否需要显示滑动至底部按钮
+function checkScrollPosition() {
+  if (!messagesContainer.value) {
+    console.log('[DEBUG] checkScrollPosition: messagesContainer 为空')
+    return
+  }
+  
+  const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+  
+  console.log(`[DEBUG] scrollTop=${scrollTop}, scrollHeight=${scrollHeight}, clientHeight=${clientHeight}, distanceFromBottom=${distanceFromBottom}`)
+  
+  // 滚动距离底部超过20像素时显示按钮
+  showScrollToBottomButton.value = distanceFromBottom > 1500
+  console.log(`[DEBUG] showScrollToBottomButton=${showScrollToBottomButton.value}`)
+}
+
+// 滚动事件节流处理（100ms间隔）
+function handleScroll() {
+  if (scrollThrottleTimer) return
+  
+  scrollThrottleTimer = setTimeout(() => {
+    scrollThrottleTimer = null
+    checkScrollPosition()
+  }, 100)
+}
+
+// 点击滑动至底部按钮
+function handleScrollToBottomClick() {
+  scrollToBottom()
+  // 滚动完成后隐藏按钮
+  setTimeout(() => {
+    showScrollToBottomButton.value = false
+  }, 500)
+}
+
 // 监听消息列表变化，自动滚动到底部
 // 使用deep: true监听消息内容的变化，确保流式输出时也能自动滚动
 watch(
@@ -1789,6 +1850,8 @@ watch(
     // 使用nextTick确保DOM已更新
     nextTick(() => {
       scrollToBottom()
+      // 检查是否需要显示滚动按钮
+      checkScrollPosition()
     })
   },
   { deep: true }
@@ -1924,7 +1987,6 @@ watch(
           </div>
           <div class="modal-footer" v-if="resumeImagePreview || isParsingResume">
             <button @click="parseAndSaveResume" :disabled="isParsingResume" class="btn-primary full-width">
-              <span v-if="isParsingResume" class="btn-spinner"></span>
               {{ isParsingResume ? '解析中...' : '开始解析' }}
             </button>
           </div>
@@ -1937,10 +1999,19 @@ watch(
   <header class="app-header">
     <div class="header-content">
       <h1>
-        <img src="@/assets/offerflow.svg" alt="OfferFlow" class="app-logo" />
+        <router-link to="/">
+          <img src="@/assets/offerflow.svg" alt="OfferFlow" class="app-logo" />
+        </router-link>
       </h1>
-      <!-- 移除消息数量提示 -->
       <div class="header-info">
+        <div class="header-contact">
+          <span class="contact-link">联系我们</span>
+          <div class="contact-tooltip">
+            <p class="tooltip-text">入产品体验群请扫码添加</p>
+            <p class="tooltip-text">备注"入群"更快通过~</p>
+            <img src="@/assets/wechatcode.jpg" alt="微信" class="wechat-qr" />
+          </div>
+        </div>
         <template v-if="isLoggedIn">
           <span class="user-email">{{ currentUser?.email }}</span>
           <button @click="logout" class="logout-btn">登出</button>
@@ -1983,6 +2054,17 @@ watch(
             <span class="loading-text">{{ loadingText }}</span>
           </div>
           </div>
+          
+          <!-- 滑动至底部按钮 -->
+          <Transition name="fade">
+            <button
+              v-if="showScrollToBottomButton"
+              class="scroll-to-bottom-btn"
+              @click="handleScrollToBottomClick"
+            >
+              <span class="scroll-arrow">↓</span>
+            </button>
+          </Transition>
         </div>
         
         <!-- 悬浮输入容器 -->
@@ -2108,6 +2190,19 @@ watch(
                   <span class="loading-text">{{ loadingText }}</span>
                 </div>
               </div>
+              
+              <!-- 滑动至底部按钮 -->
+              <Transition name="fade">
+                <button
+                  v-if="showScrollToBottomButton"
+                  class="scroll-to-bottom-btn"
+                  @click="handleScrollToBottomClick"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 9l6 6 6-6"/>
+                  </svg>
+                </button>
+              </Transition>
             </div>
             
             <!-- 悬浮输入容器 -->
@@ -2708,7 +2803,7 @@ watch(
   border-bottom: 1px solid #e0e0e0;
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 9999;
   margin: 0;
 }
 
@@ -2728,9 +2823,89 @@ watch(
   align-items: center;
 }
 
+.app-header h1 a {
+  display: block;
+}
+
 .app-logo {
   height: 26px;
   width: auto;
+}
+
+.header-contact {
+  position: relative;
+}
+
+.contact-link {
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #666;
+  cursor: pointer;
+  transition: color 0.2s;
+  margin-right: 1.5rem;
+}
+
+.contact-link:hover {
+  color: #d97706;
+}
+
+.contact-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1rem;
+  background: white;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s ease;
+  z-index: 9999;
+  text-align: center;
+  min-width: 200px;
+}
+
+.contact-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 6px solid white;
+}
+
+.header-contact:hover .contact-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.tooltip-text {
+  font-family: 'PingFang SC', 'Noto Sans SC', sans-serif;
+  font-size: 0.8125rem;
+  color: #303030;
+  margin: 0 0 0.5rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tooltip-text:last-of-type {
+  margin-bottom: 0.75rem;
+}
+
+.wechat-qr {
+  width: 160px;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+  border-radius: 4px;
 }
 
 .header-info {
@@ -2911,6 +3086,7 @@ watch(
   overflow: hidden;
   padding: 0;
   background-color: transparent;
+  position: relative;
 }
 
 .messages-container {
@@ -2924,6 +3100,63 @@ watch(
   max-width: 1200px;
   margin: 0 auto;
   font-size: 14px; /* 聊天区域字体缩小，避免内容太拥挤 */
+}
+
+/* 滑动至底部按钮 */
+.scroll-to-bottom-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(224, 224, 224, 0.8);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  transition: all 0.2s ease;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.scroll-to-bottom-btn:hover {
+  background: rgba(255, 255, 255, 0.95);
+  color: #333;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%) translateY(-2px);
+}
+
+.scroll-to-bottom-btn:active {
+  transform: translateX(-50%) translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.scroll-to-bottom-btn svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2;
+}
+
+.scroll-arrow {
+  font-size: 20px;
+  color: #666;
+  line-height: 1;
+}
+
+/* 按钮淡入淡出动画 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .floating-input-container {
@@ -4604,6 +4837,7 @@ watch(
     overflow: hidden;
     background-color: rgb(254, 253, 251); /* 与PC端聊天区域背景色一致 */
     padding-bottom: 60px; /* 为底部导航栏留出空间 */
+    position: relative;
   }
 
   .mobile-chat-view .chat-container {

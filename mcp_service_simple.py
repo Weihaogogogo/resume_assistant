@@ -62,8 +62,8 @@ class CompressionState:
 compression_state = CompressionState()
 
 # 上下文压缩配置
-MAX_HUMAN_MESSAGES = 50  # 最多保留多少条 HumanMessage
-KEEP_RECENT = 10  # 保留最近多少条不压缩
+MAX_HUMAN_MESSAGES = 20  # 最多保留20条HumanMessage，提早触发压缩
+KEEP_RECENT = 5  # 保留最近5条不压缩，减少上下文大小
 
 
 def wait_for_compression():
@@ -175,17 +175,57 @@ async def compress_context_with_llm(messages, max_summary_length=1000):
         conversation_text += f"【{role}】{str(content)[:300]}\n"
 
     summary_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""你是对话摘要专家。将以下对话压缩成简洁摘要：
+        ("system", f"""
+        你是高效的对话压缩专家。你的任务是将对话压缩到指定长度，保留最有价值的关键信息与个性化信息。
 
-要求：
-1. 摘要长度：不超过{max_summary_length}个汉字
-2. 保留关键信息：用户基本信息、工作经历、教育背景、已完成的修改、当前上下文
-3. 格式：
-   [早期对话摘要]
-   - 用户信息：xxx
-   - 已完成：xxx
-   - 待完善：xxx
-   - 当前上下文：xxx
+## 压缩目标
+- 输出摘要长度：不超过{max_summary_length}个汉字（但也不要太短）
+- 每个字都要有价值
+
+## 必须保留的信息（按优先级）
+## 必须保留的信息（按优先级）
+
+1. **讨论过的话题**
+   - 用户和 AI 讨论过哪些主题/话题
+   - 每个话题的关键结论或进展
+   - 哪些话题已结束、哪些还在进行中
+
+2. **用户明确表达的要求和偏好**
+   - 用户对简历的具体修改要求
+   - 用户提到的工作偏好、城市偏好、薪资期望等
+   - 用户明确拒绝或喜欢的风格
+
+3. **用户提及的个人背景**
+   - 用户在对话中提到的额外经历、故事
+   - 用户口头补充的信息（不在简历中的）
+   - 用户的职业规划、转型原因等
+
+4. **用户的性格特点**
+   - 用户的沟通风格（简洁话唠严肃幽默等）
+   - 用户做决策的方式（犹豫果断犹豫等）
+   - 用户的特殊习惯或偏好
+
+5. **修改历史和决策**
+   - 用户确认过的修改点
+   - 用户拒绝过的建议
+   - 用户特别满意的修改
+
+6. **当前上下文**
+   - 用户当前最关心的问题
+   - 当前对话的主题
+
+## 可以丢弃的信息
+- 简历中已有的结构化信息（姓名、岗位、技能等）
+- 客套话、寒暄
+- LLM 的解释性内容
+- 重复的表达
+
+## 输出格式
+【讨论话题】列出所有讨论过的话题及关键结论
+【用户个性化信息】用户提及的个人要求、偏好、背景等
+【修改决策】确认的修改点、拒绝的建议
+【当前状态】用户当前的需求和关注点
+【重要备注】其他需要记住的个性化信息
 """),
         ("human", f"待压缩的对话：\n\n{conversation_text}")
     ])
@@ -195,6 +235,7 @@ async def compress_context_with_llm(messages, max_summary_length=1000):
         summary_result = await summary_chain.ainvoke({})
         summary_content = summary_result.content.strip()
         print(f"[Context] LLM 摘要生成成功: {len(summary_content)}字")
+        print(f"[Context] 摘要内容:\n{summary_content}")
 
         summary_message = SystemMessage(content=summary_content)
         return [summary_message] + recent_messages
@@ -361,6 +402,19 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
             print(f"[load_resume] 加载简历: name={basics.get('name', 'N/A')}, target_position={basics.get('target_position', 'N/A')}")
         else:
             print(f"[load_resume] 未找到简历数据")
+
+        # 获取证件照
+        from database import Resume
+        resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
+        photo = resume_obj.photo if resume_obj and resume_obj.photo else ""
+
+        # 将 photo 放入 resume_data 的 basics 中（保持向前兼容）
+        if resume_data and isinstance(resume_data, dict):
+            if 'basics' not in resume_data:
+                resume_data['basics'] = {}
+            resume_data['basics']['photo'] = photo
+        else:
+            resume_data = {'basics': {'photo': photo}}
 
         # 安全获取解析状态
         try:
@@ -631,8 +685,13 @@ async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), c
         if not resume_data:
             return JSONResponse(content="错误: 没有找到简历数据，请先创建或加载简历", status_code=400)
 
+        # 从数据库获取证件照
+        from database import Resume
+        resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
+        photo = resume_obj.photo if resume_obj and resume_obj.photo else None
+
         generate_pdf = get_pdf_generator()
-        pdf_bytes = generate_pdf(resume_data, style)
+        pdf_bytes = generate_pdf(resume_data, style, photo)
 
         return StreamingResponse(
             iter([pdf_bytes]),
@@ -785,18 +844,19 @@ async def chat_endpoint(
                 # 保存上下文（带压缩逻辑）
                 from database import save_conversation_context
 
-                # 1. 构建压缩上下文（只保存 HumanMessage + 最后一条 AIMessage）
+                # 1. 构建压缩上下文（按原始顺序保存 HumanMessage 和 AIMessage）
                 compressed_context = []
-                for msg in all_human:
-                    if hasattr(msg, 'model_dump'):
-                        compressed_context.append({**msg.model_dump(), "type": "human"})
-                    else:
-                        compressed_context.append({**dict(msg), "type": "human"})
-                if new_ai:
-                    if hasattr(new_ai, 'model_dump'):
-                        compressed_context.append({**new_ai.model_dump(), "type": "ai"})
-                    else:
-                        compressed_context.append({**dict(new_ai), "type": "ai"})
+                for msg in messages_list:
+                    if isinstance(msg, HumanMessage):
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "human"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "human"})
+                    elif isinstance(msg, AIMessage):
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "ai"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "ai"})
 
                 # 检查是否需要压缩
                 if len(all_human) > MAX_HUMAN_MESSAGES:
@@ -866,6 +926,7 @@ async def chat_endpoint(
             try:
                 # 统一使用 graph.astream_events
                 # 入口路由会在 Graph 内部处理（通过 entry_router）
+                print(f"[SSE] 开始流式处理, 消息数量: {len(initial_state.get('messages', []))}")
                 async for event in graph.astream_events(initial_state, config=config, version="v1"):
                     event_type = event.get("event", "")
                     node_name = event.get("name", "")
@@ -873,6 +934,7 @@ async def chat_endpoint(
                     if event_type == "on_chain_start":
                         current_node = node_name
                         node_start_time[node_name] = time.time()
+                        print(f"[SSE] 节点开始: {node_name}")
 
                     if event_type == "on_chat_model_stream" and current_node == "conversation_llm":
                         chunk = event.get("data", {}).get("chunk", {})
@@ -904,8 +966,12 @@ async def chat_endpoint(
                             continue
 
                         if node_name == "tool_node":
+                            output_data = event.get('data', {}).get('output', {})
+                            output_keys = list(output_data.keys()) if isinstance(output_data, dict) else []
+                            print(f"[SSE] tool_node output keys: {output_keys}")
                             if isinstance(event.get("data", {}).get("output"), dict):
                                 output = event["data"]["output"]
+                                print(f"[SSE] pending_confirmation in output: {output.get('pending_confirmation')}")
                                 if "pending_confirmation" in output and output["pending_confirmation"]:
                                     confirm_data = output["pending_confirmation"]
                                     confirm_msg_id = str(uuid.uuid4())
@@ -929,13 +995,15 @@ async def chat_endpoint(
                                         "session_id": session_id
                                     }) + '\n\n'
                                     if "messages" in output:
-                                        messages_list.extend(output["messages"])
+                                        # 替换为最新消息，而不是追加（避免消息重复累积）
+                                        messages_list = list(output["messages"])
                                     continue
 
                         if isinstance(event.get("data", {}).get("output"), dict):
                             output = event["data"]["output"]
                             if "messages" in output:
-                                messages_list.extend(output["messages"])
+                                # 替换为最新消息，而不是追加（避免消息重复累积）
+                                messages_list = list(output["messages"])
                             if "resume_data" in output and not output.get("pending_confirmation"):
                                 resume_data_result = output["resume_data"]
 
@@ -952,12 +1020,15 @@ async def chat_endpoint(
                     final_content = accumulated_content
 
             except Exception as e:
+                import traceback
                 print(f"[Error] 执行错误: {str(e)}")
+                print(f"[Error] 异常堆栈: {traceback.format_exc()}")
                 final_content = f"抱歉，处理请求时出错: {str(e)}"
 
             if not final_content:
                 final_content = "抱歉，我无法理解您的请求。"
 
+            print(f"[SSE] 准备发送 final 事件, pending_confirmation={pending_confirmation_result is not None}")
             yield 'data: ' + json.dumps({
                 "type": "final",
                 "content": final_content,
@@ -977,6 +1048,7 @@ async def chat_endpoint(
                 messages_list, resume_data_result, initial_jd_data, pending_confirmation_result
             ))
 
+            print(f"[SSE] 准备发送 end 事件")
             yield 'data: ' + json.dumps({"type": "end", "session_id": session_id}) + '\n\n'
 
         return StreamingResponse(stream_response(config), media_type="text/event-stream")
