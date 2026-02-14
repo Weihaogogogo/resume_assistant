@@ -43,4 +43,4 @@ fi
 echo "使用Python: $PYTHON"
 
 # 启动后端服务
-exec "$PYTHON" -m uvicorn mcp_service_simple:app --host 0.0.0.0 --port 8000 --reload
+exec "$PYTHON" -m uvicorn mcp_service_simple:app --host 0.0.0.0 --port 8000 --reload --workers 6

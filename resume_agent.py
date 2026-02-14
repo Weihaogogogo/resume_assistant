@@ -129,7 +129,7 @@ class JobDescription(BaseModel):
 
 httpx_client = httpx.Client(
     timeout=httpx.Timeout(90.0),
-    limits=httpx.Limits(max_connections=20),  # 增加连接池大小
+    limits=httpx.Limits(max_connections=20),
 )
 
 # Conversation LLM - 负责对话和读取
@@ -546,8 +546,8 @@ async def conversation_node(state: AgentState) -> dict:
         print("[Debug] 已添加 just_saved 提示给 LLM")
 
     # 调用 LLM
-    print(f"[conversation_llm] 开始调用 LLM, messages 数量: {len(messages)}")
-    print(f"[conversation_llm] system message 长度: {len(messages[0].content) if messages else 0}")
+    print(f"[conversation_llm] [{time.strftime('%H:%M:%S')}] 开始调用 LLM, messages 数量: {len(messages)}")
+    print(f"[conversation_llm] [{time.strftime('%H:%M:%S')}] system message 长度: {len(messages[0].content) if messages else 0}")
     try:
         conversation_llm_with_tools = conversation_llm.bind_tools(
             conversation_tools,
@@ -566,6 +566,7 @@ async def conversation_node(state: AgentState) -> dict:
 
     elapsed_time = time.time() - start_time
     # 打印 LLM 输出（完整信息）
+    print(f"[conversation_llm] [{time.strftime('%H:%M:%S')}] LLM 调用完成, 耗时: {elapsed_time:.2f}s")
     print("LLM Output:")
     print(f"  content: {repr(response.content)[:200]}")
 

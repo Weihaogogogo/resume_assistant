@@ -38,4 +38,4 @@ RUN mkdir -p data && touch data/deepagents.db
 EXPOSE 8000
 
 # 使用 Gunicorn（生产环境推荐）
-CMD ["gunicorn", "mcp_service_simple:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "mcp_service_simple:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "6", "--access-logfile", "-", "--error-logfile", "-"]
