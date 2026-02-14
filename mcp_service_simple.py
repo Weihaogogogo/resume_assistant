@@ -576,37 +576,37 @@ async def parse_jd_endpoint(request: Request, current_user = Depends(get_current
 
 @app.post("/api/resume/parse_and_save")
 async def parse_and_save_resume_endpoint(
-    request: Request,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """
     解析简历图片并保存（首次上传流程）
+    支持 multipart/form-data 上传文件
     """
     try:
         import re
-        request_data = await request.json()
-        resume_image = request_data.get('image', '')
 
-        if not resume_image:
-            return JSONResponse(content={"success": False, "error": "未收到图片"}, status_code=400)
+        if not file:
+            return JSONResponse(content={"success": False, "error": "未收到文件"}, status_code=400)
 
-        # 提取 base64 并检测文件类型
-        original_data_url = resume_image
-        if resume_image.startswith('data:image') or resume_image.startswith('data:application/pdf'):
-            resume_image = resume_image.split(',')[1]
+        # 验证文件类型
+        content_type = file.content_type
+        if not content_type.startswith('image/') and content_type != 'application/pdf':
+            return JSONResponse(content={"success": False, "error": "只支持图片或PDF文件"}, status_code=400)
 
-            # 检测原始文件类型并保持格式
-            if original_data_url.startswith('data:application/pdf'):
-                mime_type = 'application/pdf'
-            elif original_data_url.startswith('data:image/png'):
-                mime_type = 'image/png'
-            elif original_data_url.startswith('data:image/webp'):
-                mime_type = 'image/webp'
-            else:
-                mime_type = 'image/jpeg'  # 默认使用jpeg
+        # 读取文件内容并转换为base64
+        file_content = await file.read()
+        base64_content = base64.b64encode(file_content).decode('utf-8')
+
+        # 根据文件类型设置MIME类型
+        if content_type == 'application/pdf':
+            mime_type = 'application/pdf'
+        elif content_type == 'image/png':
+            mime_type = 'image/png'
+        elif content_type == 'image/webp':
+            mime_type = 'image/webp'
         else:
-            # 如果没有前缀，默认作为图片处理
             mime_type = 'image/jpeg'
 
         from resume_agent import jd_parser_llm, RESUME_FULL_EXTRACT_PROMPT
@@ -614,11 +614,11 @@ async def parse_and_save_resume_endpoint(
         # 设置解析状态为进行中
         set_parsing_status(db, current_user.id, "parsing")
 
-        # 构建消息 - 根据文件类型使用正确的MIME类型
+        # 构建消息 - 使用base64数据URL
         message = HumanMessage(
             content=[
                 {"type": "text", "text": "请完整提取这份简历中的所有信息，**不要省略任何内容**。"},
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{resume_image}"}}
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_content}"}}
             ]
         )
 
@@ -1158,7 +1158,7 @@ if __name__ == "__main__":
     try:
         db = SessionLocal()
         admin_email = "admin@qq.com"
-        admin_password = "admin"
+        admin_password = "888888"
         existing_admin = get_user_by_email(db, admin_email)
         if existing_admin:
             print(f"[User] 管理员账号已存在: {admin_email}")

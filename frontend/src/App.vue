@@ -1745,47 +1745,43 @@ async function parseAndSaveResume() {
   resumeImagePreview.value = ''
 
   try {
-    // 转换为 base64
-    const reader = new FileReader()
-    reader.readAsDataURL(resumeImageFile.value)
-    reader.onload = async () => {
-      const base64 = reader.result
+    // 使用 FormData 直接上传文件
+    const formData = new FormData()
+    formData.append('file', resumeImageFile.value)
 
-      try {
-        const response = await fetch('/api/resume/parse_and_save', {
-          method: 'POST',
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ image: base64 })
-        })
+    // 构建 headers（不设置 Content-Type，让浏览器自动处理 multipart/form-data）
+    const headers = {}
+    if (token.value) {
+      headers['Authorization'] = `Bearer ${token.value}`
+    }
 
-        const data = await response.json()
+    const response = await fetch('/api/resume/parse_and_save', {
+      method: 'POST',
+      headers: headers,
+      body: formData
+    })
 
-        if (data.success) {
-          // 更新简历数据
-          resumeData.value = data.resume_data
-          closeUploadDialog()
-          // 添加欢迎消息
-          messages.value = [{
-            id: Date.now(),
-            role: 'assistant',
-            content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
-          }]
-        } else {
-          alert('解析失败：' + data.error)
-          // 解析失败，保留状态让用户可以重试
-        }
-      } catch (error) {
-        console.error('解析简历失败:', error)
-        alert('解析简历失败，请稍后重试')
-      } finally {
-        // 重置前端状态
-        isParsingResume.value = false
-        hasResumeFileSelected.value = false
-      }
+    const data = await response.json()
+
+    if (data.success) {
+      // 更新简历数据
+      resumeData.value = data.resume_data
+      closeUploadDialog()
+      // 添加欢迎消息
+      messages.value = [{
+        id: Date.now(),
+        role: 'assistant',
+        content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
+      }]
+    } else {
+      alert('解析失败：' + data.error)
+      // 解析失败，保留状态让用户可以重试
     }
   } catch (error) {
-    console.error('读取文件失败:', error)
-    alert('读取文件失败')
+    console.error('解析简历失败:', error)
+    alert('解析简历失败，请稍后重试')
+  } finally {
+    // 重置前端状态
     isParsingResume.value = false
     hasResumeFileSelected.value = false
   }
