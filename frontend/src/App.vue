@@ -2007,7 +2007,7 @@ watch(
         <div class="header-contact">
           <span class="contact-link">联系我们</span>
           <div class="contact-tooltip">
-            <p class="tooltip-text">入产品体验群请扫码添加</p>
+            <p class="tooltip-text">进产品交流群请扫码添加</p>
             <p class="tooltip-text">备注"入群"更快通过~</p>
             <img src="@/assets/wechatcode.jpg" alt="微信" class="wechat-qr" />
           </div>
