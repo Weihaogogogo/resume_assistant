@@ -777,12 +777,17 @@ async def chat_endpoint(
         # 转换数据库中的消息为 Message 对象
         historical_messages = []
         for msg_dict in db_context_raw:
-            msg_type = msg_dict.get("type", "")
+            msg_type = msg_dict.get("type", "").lower()
             content = msg_dict.get("content", "")
+            tool_calls = msg_dict.get("tool_calls", [])
+            if tool_calls:
+                continue
             if msg_type == "human":
                 historical_messages.append(HumanMessage(content=content))
             elif msg_type == "ai":
                 historical_messages.append(AIMessage(content=content))
+            elif msg_type == "system" or msg_type == "systemmessage":
+                historical_messages.append(SystemMessage(content=content))
 
         # 构建 all_messages：数据库中的历史消息 + 当前用户消息
         all_messages = list(historical_messages) + [current_message]
@@ -857,6 +862,11 @@ async def chat_endpoint(
                             compressed_context.append({**msg.model_dump(), "type": "ai"})
                         else:
                             compressed_context.append({**dict(msg), "type": "ai"})
+                    elif isinstance(msg, SystemMessage):
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "system"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "system"})
 
                 # 检查是否需要压缩
                 if len(all_human) > MAX_HUMAN_MESSAGES:
@@ -1034,12 +1044,6 @@ async def chat_endpoint(
                 "content": final_content,
                 "session_id": session_id
             }) + '\n\n'
-
-            # 将用户消息添加到 messages_list（用户消息在 initial_state 的最后）
-            if initial_state.get("messages"):
-                user_message = initial_state["messages"][-1]
-                if isinstance(user_message, HumanMessage):
-                    messages_list = [user_message] + messages_list
 
             # 保存消息到数据库（异步执行，不阻塞 SSE 响应）
             import asyncio
