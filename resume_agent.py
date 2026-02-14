@@ -27,6 +27,39 @@ from dataclasses import dataclass
 from typing import List
 from pydantic import BaseModel, Field
 
+
+def sanitize_for_log(content):
+    """清理内容中的 base64 图片数据，避免日志污染"""
+    if isinstance(content, str):
+        if len(content) > 200:
+            return content[:200] + "..."
+        return content
+    elif isinstance(content, list):
+        sanitized_items = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "image_url":
+                    sanitized_items.append("[图片已过滤]")
+                elif item.get("type") == "text":
+                    text = item.get("text", "")
+                    sanitized_items.append(text[:100] + "..." if len(text) > 100 else text)
+                else:
+                    sanitized_items.append(str(item)[:50])
+            else:
+                sanitized_items.append(str(item)[:50])
+        return "\n".join(sanitized_items)
+    return str(content)[:200]
+
+
+def estimate_tokens(text):
+    """粗略估算 tokens 数量（中英文混合场景）"""
+    if not text:
+        return 0
+    text_str = str(text)
+    chinese_chars = sum(1 for c in text_str if '\u4e00' <= c <= '\u9fff')
+    other_chars = len(text_str) - chinese_chars
+    return int(chinese_chars * 0.5 + other_chars * 0.25)
+
 # 全局变量：当前用户ID（由 mcp_service_simple.py 设置）
 current_user_id = None
 
@@ -443,7 +476,7 @@ def debug_print_state(state: AgentState, location: str = ""):
         for i, msg in enumerate(state.messages[-3:]):
             msg_type = type(msg).__name__
             content = getattr(msg, 'content', '') or ''
-            content_str = str(content)[:80] if content else ''
+            content_str = sanitize_for_log(content)[:80]
             print(f"    [{len(state.messages)-3+i}] {msg_type}: {content_str}...", file=sys.stderr)
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 print(f"       tool_calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in msg.tool_calls]}", file=sys.stderr)
@@ -488,14 +521,22 @@ async def conversation_node(state: AgentState) -> dict:
     debug_print_state(state, "conversation_node_ENTER")
     
     start_time = time.time()
+    
+    # 计算总 tokens（用于日志显示）
+    total_tokens = 0
+    for msg in state.messages:
+        content = getattr(msg, 'content', '')
+        total_tokens += estimate_tokens(content)
+    
     print(f"\n=== [Node] conversation_llm [开始] ===")
     print(f"Input: {len(state.messages)} messages")
+    print(f"Total tokens (估算): {total_tokens}")
     for i, msg in enumerate(state.messages):
         content = getattr(msg, 'content', '')
-        content_str = str(content)[:50] if content else ''
+        content_str = sanitize_for_log(content)
         msg_type = type(msg).__name__
         has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
-        print(f"  [{i}] {msg_type}: {content_str}... (tool_calls: {bool(has_tool_calls)})")
+        print(f"  [{i}] {msg_type}: {content_str[:80]}... (tool_calls: {bool(has_tool_calls)})")
 
     # 构建系统消息，使用模板替换 resume_data
     if state.resume_data:
@@ -540,14 +581,21 @@ async def conversation_node(state: AgentState) -> dict:
     # 消息已由 save_state_async 在超过 20 条时压缩，这里使用过滤后的消息
     messages = [SystemMessage(content=system_content)] + llm_messages
     
+    # 计算实际发送给 LLM 的 tokens 总数
+    llm_input_tokens = 0
+    for msg in messages:
+        msg_content = getattr(msg, 'content', '')
+        llm_input_tokens += estimate_tokens(msg_content)
+    
     # 如果刚保存了简历，添加一条 HumanMessage 提醒 LLM
     if getattr(state, 'just_saved', False):
         messages.append(HumanMessage(content="[系统提示：简历已成功保存到数据库，请不要调用任何工具，直接回复用户]"))
+        llm_input_tokens += estimate_tokens("[系统提示：简历已成功保存...]")
         print("[Debug] 已添加 just_saved 提示给 LLM")
 
     # 调用 LLM
     print(f"[conversation_llm] [{time.strftime('%H:%M:%S')}] 开始调用 LLM, messages 数量: {len(messages)}")
-    print(f"[conversation_llm] [{time.strftime('%H:%M:%S')}] system message 长度: {len(messages[0].content) if messages else 0}")
+    print(f"[conversation_llm] [{time.strftime('%H:%M:%S')}] total tokens (估算): {llm_input_tokens}")
     try:
         conversation_llm_with_tools = conversation_llm.bind_tools(
             conversation_tools,

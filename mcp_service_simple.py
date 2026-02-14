@@ -19,6 +19,31 @@ import os
 import sys
 import uuid
 from datetime import datetime
+
+
+def sanitize_for_log(content):
+    """清理内容中的 base64 图片数据，避免日志污染"""
+    if isinstance(content, str):
+        if len(content) > 200:
+            return content[:200] + "..."
+        return content
+    elif isinstance(content, list):
+        sanitized_items = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "image_url":
+                    sanitized_items.append("[图片]")
+                elif item.get("type") == "text":
+                    text = item.get("text", "")
+                    sanitized_items.append(text[:100] + "..." if len(text) > 100 else text)
+                else:
+                    sanitized_items.append(str(item)[:50])
+            else:
+                sanitized_items.append(str(item)[:50])
+        return "\n".join(sanitized_items)
+    return str(content)[:200]
+
+
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -817,7 +842,7 @@ async def chat_endpoint(
         }
         print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息, pending_confirmation={initial_state.get('pending_confirmation') is not None}")
         for i, msg in enumerate(all_messages):
-            print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
+            print(f"  {i}: {type(msg).__name__}: {sanitize_for_log(getattr(msg, 'content', ''))[:80]}...")
 
         async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, pending_confirmation=None):
             """异步保存状态到数据库，不阻塞 SSE 响应"""
@@ -849,24 +874,37 @@ async def chat_endpoint(
                 # 保存上下文（带压缩逻辑）
                 from database import save_conversation_context
 
+                # 辅助函数：从消息content中移除图片，只保留文本
+                def extract_text_only(content):
+                    if isinstance(content, str):
+                        return content
+                    elif isinstance(content, list):
+                        text_parts = []
+                        for item in content:
+                            if item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                        return "\n".join(text_parts)
+                    return str(content)
+
                 # 1. 构建压缩上下文（按原始顺序保存 HumanMessage 和 AIMessage）
+                #    注意：历史消息中过滤掉图片，只保留文本
                 compressed_context = []
                 for msg in messages_list:
                     if isinstance(msg, HumanMessage):
-                        if hasattr(msg, 'model_dump'):
-                            compressed_context.append({**msg.model_dump(), "type": "human"})
-                        else:
-                            compressed_context.append({**dict(msg), "type": "human"})
+                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                        text_content = extract_text_only(msg_content)
+                        msg_dict = {"type": "human", "content": text_content}
+                        compressed_context.append(msg_dict)
                     elif isinstance(msg, AIMessage):
-                        if hasattr(msg, 'model_dump'):
-                            compressed_context.append({**msg.model_dump(), "type": "ai"})
-                        else:
-                            compressed_context.append({**dict(msg), "type": "ai"})
+                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                        text_content = extract_text_only(msg_content)
+                        msg_dict = {"type": "ai", "content": text_content}
+                        compressed_context.append(msg_dict)
                     elif isinstance(msg, SystemMessage):
-                        if hasattr(msg, 'model_dump'):
-                            compressed_context.append({**msg.model_dump(), "type": "system"})
-                        else:
-                            compressed_context.append({**dict(msg), "type": "system"})
+                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                        text_content = extract_text_only(msg_content)
+                        msg_dict = {"type": "system", "content": text_content}
+                        compressed_context.append(msg_dict)
 
                 # 检查是否需要压缩
                 if len(all_human) > MAX_HUMAN_MESSAGES:
@@ -880,28 +918,24 @@ async def chat_endpoint(
                         recent = all_human[-(KEEP_RECENT):]  # 最近 K 条 HumanMessage
                         compressed = await compress_context_with_llm(to_compress)
 
-                        # 将压缩结果转换为字典
+                        # 压缩结果转换为字典
                         new_compressed_context = []
                         for msg in compressed:
-                            if hasattr(msg, 'model_dump'):
-                                msg_dict = {**msg.model_dump(), "type": type(msg).__name__.lower()}
-                            else:
-                                msg_dict = {**dict(msg), "type": type(msg).__name__.lower()}
+                            msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                            msg_dict = {"type": type(msg).__name__.lower(), "content": msg_content}
                             new_compressed_context.append(msg_dict)
 
                         # 添加最近 K 条 HumanMessage
                         for msg in recent:
-                            if hasattr(msg, 'model_dump'):
-                                new_compressed_context.append({**msg.model_dump(), "type": "human"})
-                            else:
-                                new_compressed_context.append({**dict(msg), "type": "human"})
+                            msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+                            msg_dict = {"type": "human", "content": msg_content}
+                            new_compressed_context.append(msg_dict)
 
                         # 添加最后一条 AIMessage
                         if new_ai:
-                            if hasattr(new_ai, 'model_dump'):
-                                new_compressed_context.append({**new_ai.model_dump(), "type": "ai"})
-                            else:
-                                new_compressed_context.append({**dict(new_ai), "type": "ai"})
+                            msg_content = new_ai.content if hasattr(new_ai, 'content') else str(new_ai)
+                            msg_dict = {"type": "ai", "content": msg_content}
+                            new_compressed_context.append(msg_dict)
 
                         # 替换 compressed_context 为压缩后的版本
                         compressed_context = new_compressed_context
