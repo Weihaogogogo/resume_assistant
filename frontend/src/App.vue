@@ -2794,7 +2794,14 @@ watch(
 
           <!-- 输入模式 -->
           <div v-if="jdInputMode === 'input'" class="jd-input-section">
-            <div class="input-group">
+            <!-- 有图片时：显示图片预览 -->
+            <div v-if="jdInputImage" class="input-group">
+              <label>目标岗位描述（图片）</label>
+              <img :src="jdInputImage" class="jd-image-preview" alt="图片预览" />
+              <button class="remove-image-btn" @click="jdInputImage = ''">移除图片</button>
+            </div>
+            <!-- 没有图片时：显示输入框 -->
+            <div v-else class="input-group">
               <label>粘贴职位描述</label>
               <textarea
                 v-model="jdInputText"
@@ -2802,11 +2809,6 @@ watch(
                 placeholder="粘贴招聘要求内容，支持直接粘贴图片（Ctrl+V）..."
                 rows="10"
               ></textarea>
-            </div>
-            <div v-if="jdInputImage" class="input-group">
-              <label>已识别的图片</label>
-              <img :src="jdInputImage" class="jd-image-preview" alt="图片预览" />
-              <button class="remove-image-btn" @click="jdInputImage = ''">移除图片</button>
             </div>
           </div>
 
@@ -4334,6 +4336,16 @@ watch(
   border-radius: 0;
   margin-top: 0.5rem;
   border: 1px solid #303030;
+}
+
+.jd-input-section .image-tip {
+  font-size: 0.875rem;
+  color: #666;
+  margin-top: 0.75rem;
+  line-height: 1.5;
+  padding: 0.5rem;
+  background: rgba(48, 48, 48, 0.04);
+  border-left: 2px solid #f8bebe;
 }
 
 .remove-image-btn {
