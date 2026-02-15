@@ -5,8 +5,6 @@
       <div class="hero-bg"></div>
       <div class="hero-content">
         <h1 class="hero-title">
-          <span class="product-name">OfferFlow</span>
-          <span class="product-tagline">AI 智能简历助手</span>
           <span class="hero-main-text">打造专业简历<br/>赢得理想 Offer</span>
         </h1>
         <p class="hero-desc">智能解析、一键优化、精准投递<br/>助你快速斩获心仪 Offer</p>
@@ -285,7 +283,7 @@ function handleCreateResume() {
 
 .hero-title .product-tagline {
   font-family: 'PingFang SC', 'Noto Sans SC', sans-serif;
-  font-size: clamp(0.875rem, 2vw, 1rem);
+  font-size: clamp(1rem, 2.5vw, 1.25rem);
   font-weight: 400;
   color: #666;
   margin-bottom: 1.5rem;
@@ -419,7 +417,7 @@ function handleCreateResume() {
   letter-spacing: 0.1em;
   color: #666;
   cursor: pointer;
-  transition: all 0.2s ease;
+  outline: none;
 }
 
 .tab-btn:last-child {
