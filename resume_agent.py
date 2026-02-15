@@ -232,28 +232,40 @@ CONVERSATION_PROMPT = """
 - 当调用工具时，传入的JSON格式如下：
 ```json
 {
-  "type": "object",
-  "properties": {
-    "company": { "type": "string", "description": "公司名称" },
-    "position": { "type": "string", "description": "职位名称" },
-    "department": { "type": "string", "description": "部门/团队" },
-    "location": { "type": "string", "description": "工作地点" },
-    "job_type": { "type": "string", "description": "全职/实习" },
-    "salary": { "type": "string", "description": "薪资范围" },
-    "description": { "type": "string", "description": "职位描述（核心职责）" },
-    "requirements": {
-      "type": "object",
-      "properties": {
-        "education": { "type": "string", "description": "学历要求" },
-        "experience": { "type": "string", "description": "经验要求" },
-        "skills": { "type": "array", "items": { "type": "string" }, "description": "技能要求" },
-        "language": { "type": "string", "description": "语言要求" }
-      }
-    },
-    "preferred_qualifications": { "type": "array", "items": { "type": "string" }, "description": "优先条件" },
-    "highlights": { "type": "array", "items": { "type": "string" }, "description": "JD亮点/核心关键词" }
+  "basics": {
+    "name": "姓名",
+    "gender": "性别",
+    "phone": "手机号",
+    "email": "邮箱",
+    "target_position": "期望岗位"
   },
-  "required": ["company", "position"]
+  "education": [{
+    "school_name": "学校",
+    "major": "专业",
+    "degree": "学位",
+    "date_range": ["开始时间", "结束时间"],
+    "school_tags": ["标签1", "标签2"],
+    "theses": []
+  }],
+  "work_experience": [{
+    "company_name": "公司",
+    "job_title": "职位",
+    "date_range": ["开始时间", "结束时间"],
+    "job_type": "实习/全职",
+    "details": ["具体工作内容1", "具体工作内容2"]
+  }],
+  "project_experience": [{
+    "project_name": "项目名称",
+    "role": "角色",
+    "date_range": ["开始时间", "结束时间"],
+    "details": ["具体内容1", "具体内容2"]
+  }],
+  "others": {
+    "skills": ["技能1", "技能2"],
+    "certificates": ["证书1", "证书2"],
+    "languages": ["语言"]
+  },
+  "self_evaluation": ["自我评价1", "自我评价2"]
 }
 ```
 
@@ -542,7 +554,10 @@ async def conversation_node(state: AgentState) -> dict:
 
     # 构建系统消息，使用模板替换 resume_data
     if state.resume_data:
-        resume_json = json.dumps(state.resume_data, ensure_ascii=False, indent=2)
+        resume_for_llm = {k: v for k, v in state.resume_data.items() if k != 'photo'}
+        if 'basics' in resume_for_llm:
+            resume_for_llm['basics'] = {k: v for k, v in resume_for_llm.get('basics', {}).items() if k != 'photo'}
+        resume_json = json.dumps(resume_for_llm, ensure_ascii=False, indent=2)
         system_content = CONVERSATION_PROMPT.replace("{{resume_data}}", f"\n{resume_json}\n")
     else:
         system_content = CONVERSATION_PROMPT.replace("{{resume_data}}", "\n（简历数据尚未加载）")

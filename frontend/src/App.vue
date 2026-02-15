@@ -128,6 +128,51 @@ const hasResumeFileSelected = ref(false) // 是否已选择简历文件（上传
 const isLoadingInitialData = ref(false) // 防止 loadInitialData 重复调用
 let parsingStatusPollInterval = null // 解析状态轮询定时器
 
+// 身份选择弹窗状态
+const showIdentityDialog = ref(false)
+const selectedIdentity = ref(null) // 'intern' | 'campus' | 'jobhop' | 'custom'
+const customIdentity = ref('') // 自定义身份输入
+
+// 预设身份的 AI 首次提问消息
+const IDENTITY_GREETINGS = {
+  intern: {
+    role: 'assistant',
+    content: `你好！我是你的简历助手 👋  
+为了帮你找到合适的**实习机会**，我们可以从你最熟悉的部分开始。
+
+比如：  
+你目前读什么**专业**？学到哪些和实习相关的课程或知识？  
+或者，有没有做过让你觉得特别有收获的**课程项目**或小实践？  
+又或者，你希望尝试哪个方向的**实习**？为什么对它感兴趣？
+
+不用着急写完整简历，先随便聊聊其中一点就好～`
+  },
+  campus: {
+    role: 'assistant',
+    content: `你好！我是你的简历助手 👋  
+校招竞争激烈，但每个人都有独特的故事。我们可以从你最有信心的一块开始梳理。
+
+比如：  
+你最想投递什么类型的**岗位**？为什么觉得它适合你？  
+或者，有没有一段**项目/实习**经历，让你觉得自己"真的搞定了点东西"？  
+又或者，你在学校里做过哪些别人可能没有的经历（**比赛**、**科研**、**创业**、**社团**等）？
+
+选一个你愿意多说几句的方向，我来帮你理清楚怎么写进简历～`
+  },
+  jobhop: {
+    role: 'assistant',
+    content: `你好！我是你的简历助手 👋  
+跳槽或转型的关键，是让新公司看到你过去经验的价值。我们可以从你最想突出的部分聊起。
+
+比如：  
+你现在主要做什么**工作**？最近半年最有成就感的一件事是什么？  
+或者，你希望下一步往哪个方向发展？是什么让你决定要**转型**？  
+又或者，有没有一个**项目**，让你觉得"这段经历绝对值得写在简历里"？
+
+不用马上全部回答，先说说其中一点，我来帮你提炼亮点 💡`
+  }
+}
+
 // 获取认证 headers
 function getAuthHeaders() {
   const headers = {
@@ -207,6 +252,13 @@ onMounted(() => {
       console.log('[DEBUG] messagesContainer 未找到')
     }
   })
+
+  // 初始化页面滚动状态（直接访问 /admin 时）
+  if (route.path === '/admin') {
+    document.body.style.overflow = 'auto'
+  } else {
+    document.body.style.overflow = 'hidden'
+  }
 })
 
 // 清理监听器
@@ -233,6 +285,13 @@ watch(() => route.path, async () => {
       console.log('[DEBUG] watch: 用户已登录，开始加载数据...')
       await loadInitialData()
     }
+  }
+
+  // /admin 页面启用滚动，其他页面禁用页面级滚动
+  if (route.path === '/admin') {
+    document.body.style.overflow = 'auto'
+  } else {
+    document.body.style.overflow = 'hidden'
   }
 })
 
@@ -384,6 +443,69 @@ async function pollParsingStatus() {
       showUploadDialog.value = false
       // 重新加载简历
       await loadResumeData()
+
+      // 刷新页面后首次加载时，需要调用 first_message_from_resume 生成首次提问
+      // 检查是否已有聊天历史，如果没有则调用
+      if (messages.value.length === 0) {
+        console.log('📋 轮询检测到解析完成，调用 first_message_from_resume...')
+        isLoading.value = true
+        try {
+          const firstMsgResponse = await fetch('/api/chat/first_message_from_resume', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({
+              session_id: sessionId.value || ''
+            })
+          })
+
+          const firstMsgData = await firstMsgResponse.json()
+          isLoading.value = false
+
+          if (!firstMsgData.error && firstMsgData.message) {
+            const aiMessage = firstMsgData.message || firstMsgData.content
+            messages.value = [{
+              id: Date.now(),
+              role: 'assistant',
+              content: aiMessage
+            }]
+
+            if (firstMsgData.session_id) {
+              sessionId.value = firstMsgData.session_id
+            }
+
+            // 保存对话到数据库
+            try {
+              await fetch('/save_conversation', {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                  session_id: sessionId.value,
+                  messages: [{ type: 'ai', content: aiMessage }]
+                })
+              })
+            } catch (saveError) {
+              console.error('保存对话失败:', saveError)
+            }
+
+            // 保存到数据库和上下文
+            try {
+              await fetch('/api/chat/save_ai_message', {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                  message: aiMessage,
+                  session_id: sessionId.value || ''
+                })
+              })
+            } catch (saveAiError) {
+              console.error('保存 AI 消息失败:', saveAiError)
+            }
+          }
+        } catch (firstMsgError) {
+          isLoading.value = false
+          console.error('获取首次提问失败:', firstMsgError)
+        }
+      }
     } else if (status === 'failed') {
       // 解析失败
       console.error('❌ 解析失败')
@@ -1645,16 +1767,173 @@ function closeStartDialog() {
   showStartDialog.value = false
 }
 
-// 从空白创建简历
+// 从空白创建简历 - 打开身份选择弹窗
 function startFromBlank() {
   closeStartDialog()
-  // 直接进入主页，简历数据为空，用户可以手动填写
-  // 添加欢迎消息
-  messages.value = [{
-    id: Date.now(),
-    role: 'assistant',
-    content: '你好！我是简历助手。你可以从空白开始创建简历，我会帮你完善简历内容。'
-  }]
+  // 打开身份选择弹窗
+  showIdentityDialog.value = true
+  selectedIdentity.value = null
+  customIdentity.value = ''
+}
+
+// 关闭身份选择弹窗
+function closeIdentityDialog() {
+  showIdentityDialog.value = false
+  selectedIdentity.value = null
+  customIdentity.value = ''
+}
+
+// 从身份选择返回上一步（回到开始选择弹窗）
+function backToStartFromIdentity() {
+  showIdentityDialog.value = false
+  selectedIdentity.value = null
+  customIdentity.value = ''
+  showStartDialog.value = true
+}
+
+// 处理预设身份选择
+function selectIdentity(identity) {
+  selectedIdentity.value = identity
+  customIdentity.value = ''
+}
+
+// 确认身份选择
+async function confirmIdentitySelection() {
+  if (!selectedIdentity.value) {
+    alert('请选择一个身份类型')
+    return
+  }
+
+  if (selectedIdentity.value === 'custom' && !customIdentity.value.trim()) {
+    alert('请输入你的身份描述')
+    return
+  }
+
+  // 先保存选择的身份，因为 closeIdentityDialog 会重置 selectedIdentity
+  const identity = selectedIdentity.value
+  const customDesc = customIdentity.value.trim()
+
+  closeIdentityDialog()
+  closeStartDialog()
+
+  if (identity === 'custom') {
+    // 自定义身份：调用后端 API 获取首次提问
+    isLoading.value = true
+    try {
+      const response = await fetch('/api/chat/first_message', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          user_type: 'custom',
+          custom_identity: customDesc,
+          session_id: sessionId.value || ''
+        })
+      })
+
+      const data = await response.json()
+      
+      isLoading.value = false
+
+      if (data.error) {
+        alert(data.error)
+        return
+      }
+
+      const aiMessage = data.message || data.content
+
+      messages.value = [{
+        id: Date.now(),
+        role: 'assistant',
+        content: aiMessage
+      }]
+
+      // 保存 session_id 到全局
+      if (data.session_id) {
+        sessionId.value = data.session_id
+      }
+
+      // 保存对话到数据库（后端已保存，但确保前端也保存一次）
+      try {
+        await fetch('/save_conversation', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            session_id: sessionId.value,
+            messages: [
+              { type: 'human', content: `我的身份描述：${customDesc}` },
+              { type: 'ai', content: aiMessage }
+            ]
+          })
+        })
+      } catch (saveError) {
+        console.error('保存对话失败:', saveError)
+      }
+
+      // 调用后端保存 AI 消息（保存到数据库和上下文）
+      try {
+        await fetch('/api/chat/save_ai_message', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            message: aiMessage,
+            session_id: sessionId.value || ''
+          })
+        })
+      } catch (saveAiError) {
+        console.error('保存 AI 消息失败:', saveAiError)
+      }
+    } catch (error) {
+      isLoading.value = false
+      console.error('获取首次提问失败:', error)
+      alert('获取首次提问失败，请重试')
+    }
+  } else {
+    // 预设身份：直接使用预制消息并保存到数据库
+    isLoading.value = true
+    const greeting = IDENTITY_GREETINGS[identity]
+    const aiMessage = greeting.content
+
+    messages.value = [{
+      id: Date.now(),
+      role: greeting.role,
+      content: aiMessage
+    }]
+
+    // 保存对话到数据库
+    try {
+      await fetch('/save_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          session_id: sessionId.value,
+          messages: [{ type: 'ai', content: aiMessage }]
+        })
+      })
+    } catch (saveError) {
+      console.error('保存对话失败:', saveError)
+    }
+
+    isLoading.value = false
+
+    // 调用后端保存 AI 消息
+    try {
+      const saveResponse = await fetch('/api/chat/save_ai_message', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          message: greeting.content,
+          session_id: sessionId.value || ''
+        })
+      })
+
+      const saveData = await saveResponse.json()
+      if (saveData.session_id) {
+        sessionId.value = saveData.session_id
+      }
+    } catch (saveError) {
+      console.error('保存消息失败:', saveError)
+    }
+  }
 }
 
 // 显示上传弹窗
@@ -1767,12 +2046,81 @@ async function parseAndSaveResume() {
       // 更新简历数据
       resumeData.value = data.resume_data
       closeUploadDialog()
-      // 添加欢迎消息
-      messages.value = [{
-        id: Date.now(),
-        role: 'assistant',
-        content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
-      }]
+
+      // 获取 AI 的首次针对性提问
+      isLoading.value = true
+      try {
+        const firstMsgResponse = await fetch('/api/chat/first_message_from_resume', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            session_id: sessionId.value || ''
+          })
+        })
+
+        const firstMsgData = await firstMsgResponse.json()
+
+        isLoading.value = false
+
+        if (firstMsgData.error) {
+          // 如果获取首次提问失败，使用通用欢迎消息
+          messages.value = [{
+            id: Date.now(),
+            role: 'assistant',
+            content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
+          }]
+        } else {
+          // 显示 AI 的首次针对性提问
+          const aiMessage = firstMsgData.message || firstMsgData.content
+          messages.value = [{
+            id: Date.now(),
+            role: 'assistant',
+            content: aiMessage
+          }]
+
+          // 保存 session_id 到全局
+          if (firstMsgData.session_id) {
+            sessionId.value = firstMsgData.session_id
+          }
+
+          // 保存对话到数据库
+          try {
+            await fetch('/save_conversation', {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({
+                session_id: sessionId.value,
+                messages: [{ type: 'ai', content: aiMessage }]
+              })
+            })
+          } catch (saveError) {
+            console.error('保存对话失败:', saveError)
+          }
+
+          // 调用后端保存 AI 消息（保存到数据库和上下文）
+          try {
+            await fetch('/api/chat/save_ai_message', {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({
+                message: aiMessage,
+                session_id: sessionId.value || ''
+              })
+            })
+          } catch (saveAiError) {
+            console.error('保存 AI 消息失败:', saveAiError)
+          }
+        }
+      } catch (firstMsgError) {
+        isLoading.value = false
+        console.error('获取首次提问失败:', firstMsgError)
+        // 使用通用欢迎消息
+        messages.value = [{
+          id: Date.now(),
+          role: 'assistant',
+          content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
+        }]
+      }
     } else {
       alert('解析失败：' + data.error)
       // 解析失败，保留状态让用户可以重试
@@ -1901,6 +2249,124 @@ watch(
               <svg class="option-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="9 18 15 12 9 6"></polyline>
               </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 身份选择弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showIdentityDialog" class="modal-mask">
+        <div class="modal-container start-modal identity-selection" @click.stop>
+          <div class="modal-header">
+            <div class="header-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+            </div>
+            <h2>选择你的身份</h2>
+            <div class="modal-actions">
+              <button @click="backToStartFromIdentity" class="modal-back">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="19" y1="12" x2="5" y2="12"></line>
+                  <polyline points="12 19 5 12 12 5"></polyline>
+                </svg>
+                返回
+              </button>
+            </div>
+          </div>
+          <p class="modal-desc">选择最符合你当前情况的身份类型</p>
+          
+          <div class="identity-cards-container">
+            <!-- 四个身份卡片竖排 -->
+            <div class="identity-cards-row">
+              <!-- 寻找实习 -->
+              <button 
+                @click="selectIdentity('intern')" 
+                :class="['identity-card', { active: selectedIdentity === 'intern' }]"
+              >
+                <div class="identity-icon">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">寻找实习</div>
+                  <div class="identity-desc">正在寻找实习机会的学生</div>
+                </div>
+              </button>
+              
+              <!-- 校招应届 -->
+              <button 
+                @click="selectIdentity('campus')" 
+                :class="['identity-card', { active: selectedIdentity === 'campus' }]"
+              >
+                <div class="identity-icon pink">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+                    <path d="M12 16v4"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">校招应届</div>
+                  <div class="identity-desc">准备参加校园招聘的应届毕业生</div>
+                </div>
+              </button>
+              
+              <!-- 跳槽转型 -->
+              <button 
+                @click="selectIdentity('jobhop')" 
+                :class="['identity-card', { active: selectedIdentity === 'jobhop' }]"
+              >
+                <div class="identity-icon">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">跳槽转型</div>
+                  <div class="identity-desc">计划跳槽的职场白领</div>
+                </div>
+              </button>
+
+              <!-- 自定义 -->
+              <button 
+                @click="selectIdentity('custom')" 
+                :class="['identity-card', { active: selectedIdentity === 'custom' }]"
+              >
+                <div class="identity-icon pink">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">自定义</div>
+                  <div class="identity-desc">不符合上述选项，描述你的情况</div>
+                </div>
+              </button>
+            </div>
+
+            <!-- 自定义身份输入框 -->
+            <div v-if="selectedIdentity === 'custom'" class="custom-identity-input">
+              <textarea 
+                v-model="customIdentity" 
+                placeholder="请简单描述你的情况，例如：我是工作3年的产品经理，想转行做技术..."
+                rows="3"
+              ></textarea>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button @click="confirmIdentitySelection" :disabled="!selectedIdentity || (selectedIdentity === 'custom' && !customIdentity.trim())" class="btn-primary full-width">
+              开始创建简历
             </button>
           </div>
         </div>

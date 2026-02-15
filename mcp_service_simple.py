@@ -19,31 +19,6 @@ import os
 import sys
 import uuid
 from datetime import datetime
-
-
-def sanitize_for_log(content):
-    """清理内容中的 base64 图片数据，避免日志污染"""
-    if isinstance(content, str):
-        if len(content) > 200:
-            return content[:200] + "..."
-        return content
-    elif isinstance(content, list):
-        sanitized_items = []
-        for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "image_url":
-                    sanitized_items.append("[图片]")
-                elif item.get("type") == "text":
-                    text = item.get("text", "")
-                    sanitized_items.append(text[:100] + "..." if len(text) > 100 else text)
-                else:
-                    sanitized_items.append(str(item)[:50])
-            else:
-                sanitized_items.append(str(item)[:50])
-        return "\n".join(sanitized_items)
-    return str(content)[:200]
-
-
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -510,6 +485,28 @@ async def save_jd_endpoint(request: Request, db: Session = Depends(get_db), curr
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
+def filter_images_from_message_dict(msg_dict):
+    """过滤消息字典中的图片内容"""
+    if not isinstance(msg_dict, dict):
+        return msg_dict
+
+    content = msg_dict.get('content', '')
+
+    # 如果 content 是列表（多模态内容），过滤掉图片
+    if isinstance(content, list):
+        filtered = []
+        for item in content:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                filtered.append(item)
+            # 跳过 type == 'image_url' 的图片
+        if filtered:
+            msg_dict['content'] = filtered
+        else:
+            msg_dict['content'] = ''
+
+    return msg_dict
+
+
 @app.post("/save_conversation")
 async def save_conversation_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
@@ -520,8 +517,11 @@ async def save_conversation_endpoint(request: Request, db: Session = Depends(get
         session_id = request_data.get('session_id', 'default')
         messages = request_data.get('messages', [])
 
+        # 过滤掉消息中的图片
+        filtered_messages = [filter_images_from_message_dict(msg) for msg in messages]
+
         from database import save_conversation
-        save_conversation(db, current_user.id, session_id, messages)
+        save_conversation(db, current_user.id, session_id, filtered_messages)
 
         return JSONResponse(content={"success": True})
     except Exception as e:
@@ -842,7 +842,34 @@ async def chat_endpoint(
         }
         print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息, pending_confirmation={initial_state.get('pending_confirmation') is not None}")
         for i, msg in enumerate(all_messages):
-            print(f"  {i}: {type(msg).__name__}: {sanitize_for_log(getattr(msg, 'content', ''))[:80]}...")
+            print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
+
+        def filter_images_from_content(content):
+            """过滤消息内容中的图片，只保留文本"""
+            if isinstance(content, list):
+                # 过滤掉图片，只保留文本
+                filtered = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            filtered.append(item)
+                        # 跳过 type == "image_url" 的图片
+                return filtered if filtered else ""
+            return content
+
+        def filter_images_from_message(msg):
+            """过滤消息中的图片内容"""
+            content = getattr(msg, 'content', '')
+            filtered_content = filter_images_from_content(content)
+
+            # 创建新的消息对象，只包含过滤后的内容
+            if isinstance(msg, HumanMessage):
+                return HumanMessage(content=filtered_content)
+            elif isinstance(msg, AIMessage):
+                return AIMessage(content=filtered_content)
+            elif isinstance(msg, SystemMessage):
+                return SystemMessage(content=filtered_content)
+            return msg
 
         async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, pending_confirmation=None):
             """异步保存状态到数据库，不阻塞 SSE 响应"""
@@ -852,9 +879,12 @@ async def chat_endpoint(
                 else:
                     print(f"[SaveStateAsync] 开始保存状态, pending_confirmation=None")
 
-                # 从 messages_list 中提取 HumanMessage 和 AIMessage（跳过 ToolMessage）
-                all_human = [msg for msg in messages_list if isinstance(msg, HumanMessage)]
-                all_ai = [msg for msg in messages_list if isinstance(msg, AIMessage)]
+                # 过滤掉消息中的图片
+                filtered_messages_list = [filter_images_from_message(msg) for msg in messages_list]
+
+                # 从 filtered_messages_list 中提取 HumanMessage 和 AIMessage（跳过 ToolMessage）
+                all_human = [msg for msg in filtered_messages_list if isinstance(msg, HumanMessage)]
+                all_ai = [msg for msg in filtered_messages_list if isinstance(msg, AIMessage)]
 
                 # 提取最后一条 AIMessage
                 new_ai = all_ai[-1] if all_ai else None
@@ -874,37 +904,24 @@ async def chat_endpoint(
                 # 保存上下文（带压缩逻辑）
                 from database import save_conversation_context
 
-                # 辅助函数：从消息content中移除图片，只保留文本
-                def extract_text_only(content):
-                    if isinstance(content, str):
-                        return content
-                    elif isinstance(content, list):
-                        text_parts = []
-                        for item in content:
-                            if item.get("type") == "text":
-                                text_parts.append(item.get("text", ""))
-                        return "\n".join(text_parts)
-                    return str(content)
-
                 # 1. 构建压缩上下文（按原始顺序保存 HumanMessage 和 AIMessage）
-                #    注意：历史消息中过滤掉图片，只保留文本
                 compressed_context = []
-                for msg in messages_list:
+                for msg in filtered_messages_list:
                     if isinstance(msg, HumanMessage):
-                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                        text_content = extract_text_only(msg_content)
-                        msg_dict = {"type": "human", "content": text_content}
-                        compressed_context.append(msg_dict)
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "human"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "human"})
                     elif isinstance(msg, AIMessage):
-                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                        text_content = extract_text_only(msg_content)
-                        msg_dict = {"type": "ai", "content": text_content}
-                        compressed_context.append(msg_dict)
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "ai"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "ai"})
                     elif isinstance(msg, SystemMessage):
-                        msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                        text_content = extract_text_only(msg_content)
-                        msg_dict = {"type": "system", "content": text_content}
-                        compressed_context.append(msg_dict)
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "system"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "system"})
 
                 # 检查是否需要压缩
                 if len(all_human) > MAX_HUMAN_MESSAGES:
@@ -918,24 +935,28 @@ async def chat_endpoint(
                         recent = all_human[-(KEEP_RECENT):]  # 最近 K 条 HumanMessage
                         compressed = await compress_context_with_llm(to_compress)
 
-                        # 压缩结果转换为字典
+                        # 将压缩结果转换为字典
                         new_compressed_context = []
                         for msg in compressed:
-                            msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                            msg_dict = {"type": type(msg).__name__.lower(), "content": msg_content}
+                            if hasattr(msg, 'model_dump'):
+                                msg_dict = {**msg.model_dump(), "type": type(msg).__name__.lower()}
+                            else:
+                                msg_dict = {**dict(msg), "type": type(msg).__name__.lower()}
                             new_compressed_context.append(msg_dict)
 
                         # 添加最近 K 条 HumanMessage
                         for msg in recent:
-                            msg_content = msg.content if hasattr(msg, 'content') else str(msg)
-                            msg_dict = {"type": "human", "content": msg_content}
-                            new_compressed_context.append(msg_dict)
+                            if hasattr(msg, 'model_dump'):
+                                new_compressed_context.append({**msg.model_dump(), "type": "human"})
+                            else:
+                                new_compressed_context.append({**dict(msg), "type": "human"})
 
                         # 添加最后一条 AIMessage
                         if new_ai:
-                            msg_content = new_ai.content if hasattr(new_ai, 'content') else str(new_ai)
-                            msg_dict = {"type": "ai", "content": msg_content}
-                            new_compressed_context.append(msg_dict)
+                            if hasattr(new_ai, 'model_dump'):
+                                new_compressed_context.append({**new_ai.model_dump(), "type": "ai"})
+                            else:
+                                new_compressed_context.append({**dict(new_ai), "type": "ai"})
 
                         # 替换 compressed_context 为压缩后的版本
                         compressed_context = new_compressed_context
@@ -1050,6 +1071,9 @@ async def chat_endpoint(
                                 messages_list = list(output["messages"])
                             if "resume_data" in output and not output.get("pending_confirmation"):
                                 resume_data_result = output["resume_data"]
+                            # 更新 pending_confirmation_result（包括 None，用于清除状态）
+                            if "pending_confirmation" in output:
+                                pending_confirmation_result = output["pending_confirmation"]
 
                 if not accumulated_content:
                     for msg in reversed(messages_list):
@@ -1169,6 +1193,303 @@ async def confirm_endpoint(
 
     except Exception as e:
         print(f"确认接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+
+# =============================================================================
+# 首次提问 Prompt 模板
+# =============================================================================
+
+FIRST_MESSAGE_FOR_CUSTOM_IDENTITY_PROMPT = """
+# 角色
+你是资深职业顾问，擅长通过对话了解用户的背景并帮助他们打造专业简历。
+
+# 任务
+根据用户描述的身份信息，生成 2-4 个针对性的首次提问，帮助开始建立简历。
+
+# 用户身份描述
+{custom_identity}
+
+# 分析要点
+用户可能描述的身份类型包括但不限于：
+- 应届生但非典型毕业时间（如间隔年、创业后回归职场）
+- 有工作经验但非标准职场路径（如自由职业、间歇性工作）
+- 转行者（如从技术转产品、从医疗转互联网）
+- 海归/归国人员
+- 其他非标准身份
+
+# 提问原则
+1. 基于用户描述的身份信息，理解其独特背景
+2. 提问要自然、友好，像朋友聊天一样
+3. 关注用户尚未提及但建立简历所需的关键信息
+4. 问题要具体，不要太泛泛
+5. 适当回应用户描述的身份，表达理解
+6. 通用问题方向（根据用户身份调整）：
+   - 当前状态/最近在做什么
+   - 目标岗位/职业方向
+   - 核心技能/优势
+   - 项目/工作经历
+   - 教育背景
+
+# 输出格式
+开场先简短回应用户的身份描述，表达理解。
+然后列出 2-4 个问题，对关键信息使用 Markdown 加粗语法。
+在所有问题之后，添加一行友好的引导语，例如：
+"💡 你可以先选择一个最想聊的告诉我，比如：'我想先说说我的**项目经历**' 或 '先回答我关于**第三个问题**'"
+用自然的口语化表达，不要太正式。
+不要输出 JSON，不要有任何前缀。
+"""
+
+FIRST_MESSAGE_FROM_RESUME_PROMPT = """
+# 角色
+你是资深职业顾问，擅长通过对话挖掘用户的职业经历和优势。
+
+# 任务
+根据用户已解析的简历内容，生成 2-4 个针对性的首次提问，帮助完善简历。
+
+# 简历数据
+{resume_data}
+
+# 要求
+1. 首先分析简历中的关键信息：
+   - 目标岗位（target_position）
+   - 教育背景（education）
+   - 工作经历（work_experience）
+   - 项目经历（project_experience）
+   - 技能（skills）
+   - 自我评价（self_evaluation）
+   - 其他信息（others）
+
+2. 提问原则：
+   - 挖掘简历中缺失或描述不完整的重要信息
+   - 针对简历中的亮点进行深入了解
+   - 提问要有针对性，不能是泛泛的问题
+   - 每个问题都要有明确的信息挖掘目标
+
+3. 提问数量：2-4 个问题
+
+4. 提问示例（根据简历内容调整）：
+   - 如果缺少项目细节："我看到你提到了[项目名]，能详细说说你在其中担任什么角色、遇到的最大挑战是什么吗？"
+   - 如果缺少量化数据："你提到[工作/项目]提升了效率，能具体说说提升了多少吗？"
+   - 如果缺少技能应用："你掌握了[技能]，有没有实际应用这个技能解决问题的经历？"
+
+# 输出格式
+直接输出提问内容，用自然的口语化表达。
+对关键信息使用 Markdown 加粗语法（如 **专业**、**项目** 等）。
+
+在所有问题之后，添加一行友好的引导语，例如：
+"💡 你可以先选择一个最想聊的告诉我，比如：'我想先说说我的**项目经历**' 或 '先回答我关于**第三个问题**'"
+不要输出 JSON，不要有任何前缀。
+"""
+
+
+class FirstMessageRequest(BaseModel):
+    user_type: str
+    custom_identity: str
+    session_id: str = ""
+
+@app.post("/api/chat/first_message")
+async def first_message_endpoint(
+    request: FirstMessageRequest,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    获取自定义身份的首次提问
+
+    - user_type: 'custom' 表示自定义身份
+    - custom_identity: 用户描述的身份信息
+    """
+    try:
+        user_type = request.user_type
+        custom_identity = request.custom_identity
+        session_id = request.session_id
+
+        if user_type != 'custom':
+            return JSONResponse(content={"error": "请使用 custom 类型"}, status_code=400)
+
+        if not custom_identity or not custom_identity.strip():
+            return JSONResponse(content={"error": "请输入身份描述"}, status_code=400)
+
+        # 生成会话 ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 填充 prompt
+        prompt = FIRST_MESSAGE_FOR_CUSTOM_IDENTITY_PROMPT.format(custom_identity=custom_identity)
+
+        # 调用 LLM 生成首次提问（使用 conversation_llm）
+        from langchain_core.prompts import ChatPromptTemplate
+        from resume_agent import conversation_llm
+
+        # 创建提示模板
+        prompt_template = ChatPromptTemplate.from_template("{prompt}")
+        chain = prompt_template | conversation_llm
+
+        # 调用 LLM
+        response = chain.invoke({"prompt": prompt})
+        ai_message = response.content
+
+        # 保存 AI 消息到数据库（同时保存到 messages 和 compressed_context）
+        from database import save_conversation, save_conversation_context
+        from langchain_core.messages import HumanMessage, AIMessage
+
+        # 保存到 messages 字段
+        save_conversation(db, current_user.id, session_id, [
+            {"type": "human", "content": f"我的身份描述：{custom_identity}"},
+            {"type": "ai", "content": ai_message}
+        ])
+
+        # 保存到 compressed_context 字段
+        human_msg = HumanMessage(content=f"我的身份描述：{custom_identity}")
+        ai_msg = AIMessage(content=ai_message)
+        save_conversation_context(
+            db,
+            current_user.id,
+            session_id,
+            [
+                {"type": "human", "content": f"我的身份描述：{custom_identity}"},
+                {"type": "ai", "content": ai_message}
+            ]
+        )
+
+        return JSONResponse(content={
+            "message": ai_message,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        print(f"首次提问接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+class FirstMessageFromResumeRequest(BaseModel):
+    session_id: str = ""
+
+@app.post("/api/chat/first_message_from_resume")
+async def first_message_from_resume_endpoint(
+    request: FirstMessageFromResumeRequest,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    根据已解析的简历内容获取首次提问
+    """
+    try:
+        session_id = request.session_id
+
+        # 生成会话 ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 从数据库获取用户简历数据
+        resume_data = get_user_resume(db, current_user.id)
+
+        if not resume_data:
+            return JSONResponse(content={
+                "message": "简历已解析完成！我是简历助手，有什么可以帮助你的吗？",
+                "session_id": session_id
+            })
+
+        # 填充 prompt
+        prompt = FIRST_MESSAGE_FROM_RESUME_PROMPT.format(resume_data=json.dumps(resume_data, ensure_ascii=False, indent=2))
+
+        # 调用 LLM 生成首次提问（使用 conversation_llm）
+        from langchain_core.prompts import ChatPromptTemplate
+        from resume_agent import conversation_llm
+
+        # 创建提示模板
+        prompt_template = ChatPromptTemplate.from_template("{prompt}")
+        chain = prompt_template | conversation_llm
+
+        # 调用 LLM
+        response = chain.invoke({"prompt": prompt})
+        ai_message = response.content
+
+        # 保存 AI 消息到数据库（同时保存到 messages 和 compressed_context）
+        from database import save_conversation, save_conversation_context
+
+        # 保存到 messages 字段
+        save_conversation(db, current_user.id, session_id, [
+            {"type": "ai", "content": ai_message}
+        ])
+
+        # 保存到 compressed_context 字段
+        save_conversation_context(
+            db,
+            current_user.id,
+            session_id,
+            [
+                {"type": "ai", "content": ai_message}
+            ]
+        )
+
+        return JSONResponse(content={
+            "message": ai_message,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        print(f"简历首次提问接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+class SaveAIMessageRequest(BaseModel):
+    message: str
+    session_id: str = ""
+
+@app.post("/api/chat/save_ai_message")
+async def save_ai_message_endpoint(
+    request: SaveAIMessageRequest,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    保存 AI 消息到数据库（同时保存到 messages 和 compressed_context）
+    """
+    try:
+        message = request.message
+        session_id = request.session_id
+
+        if not message or not message.strip():
+            return JSONResponse(content={"error": "消息不能为空"}, status_code=400)
+
+        # 生成会话 ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 保存 AI 消息到数据库
+        from database import save_conversation, save_conversation_context
+
+        # 保存到 messages 字段
+        save_conversation(db, current_user.id, session_id, [
+            {"type": "ai", "content": message}
+        ])
+
+        # 保存到 compressed_context 字段
+        save_conversation_context(
+            db,
+            current_user.id,
+            session_id,
+            [
+                {"type": "ai", "content": message}
+            ]
+        )
+
+        return JSONResponse(content={
+            "success": True,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        print(f"保存 AI 消息接口错误: {str(e)}")
         import traceback
         traceback.print_exc()
         return JSONResponse(content={"error": str(e)}, status_code=500)
