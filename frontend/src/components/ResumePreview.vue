@@ -89,7 +89,7 @@ const allItems = computed(() => {
     items.push({ type: 'basics', index: index++, visible: true })
   }
 
-  if (props.data.education) {
+  if (props.data.education && props.data.education.length) {
     items.push({ type: 'education-title', index: index++, visible: true })
     props.data.education.forEach((edu, i) => {
       items.push({ type: 'education-item', dataIndex: i, index: index++, visible: true })
@@ -102,7 +102,7 @@ const allItems = computed(() => {
     })
   }
 
-  if (props.data.work_experience) {
+  if (props.data.work_experience && props.data.work_experience.length) {
     items.push({ type: 'work-title', index: index++, visible: true })
     props.data.work_experience.forEach((work, i) => {
       items.push({ type: 'work-item', dataIndex: i, index: index++, visible: true })
@@ -113,7 +113,7 @@ const allItems = computed(() => {
     })
   }
 
-  if (props.data.project_experience || props.data.projects) {
+  if ((props.data.project_experience || props.data.projects) && (props.data.project_experience || props.data.projects).length) {
     items.push({ type: 'projects-title', index: index++, visible: true })
     const projects = props.data.project_experience || props.data.projects
     projects.forEach((proj, i) => {
@@ -125,7 +125,7 @@ const allItems = computed(() => {
     })
   }
 
-  if (props.data.others) {
+  if (props.data.others && (props.data.others.skills?.length || props.data.others.certificates?.length || props.data.others.languages?.length)) {
     items.push({ type: 'others-title', index: index++, visible: true })
     // 技能一行显示
     if (props.data.others.skills?.length) {
@@ -142,7 +142,7 @@ const allItems = computed(() => {
   }
 
   // 每条自我评价独立分页
-  if (props.data.self_evaluation) {
+  if (props.data.self_evaluation && props.data.self_evaluation.length) {
     items.push({ type: 'self-eval-title', index: index++, visible: true })
     props.data.self_evaluation.forEach((_, i) => {
       items.push({ type: 'self-eval-item', dataIndex: i, index: index++, visible: true })
