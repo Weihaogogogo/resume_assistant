@@ -456,6 +456,72 @@ RESUME_FULL_EXTRACT_PROMPT = '''# Role
 # =============================================================================
 
 @tool
+def fix_unquoted_json_strings(content: str) -> str:
+    """
+    修复JSON中未转义的双引号问题。
+
+    LLM在生成JSON时，可能会在字符串值内部使用双引号（如 "Pre-download"），
+    但忘记转义成 \"。这个函数尝试检测并修复这种情况。
+    """
+    import re
+
+    # 尝试直接解析
+    try:
+        json.loads(content)
+        return content
+    except json.JSONDecodeError:
+        pass
+
+    # 修复策略：使用更智能的方式处理
+    # 遍历JSON，逐字符处理，跟踪是否在字符串内部
+    result = []
+    i = 0
+    n = len(content)
+
+    while i < n:
+        char = content[i]
+
+        # 检查是否是转义序列的一部分
+        if char == '\\' and i + 1 < n:
+            # 这是一个转义字符，保留它和下一个字符
+            result.append(char)
+            result.append(content[i + 1])
+            i += 2
+            continue
+
+        if char == '"':
+            # 找到引号，需要判断是字符串开始/结束，还是字符串内部的引号
+            # 从当前位置向前查找，确定是否在字符串内部
+            # 简化处理：如果前面有奇数个未转义的反斜杠，则是在字符串内部
+            backslash_count = 0
+            j = len(result) - 1
+            while j >= 0 and result[j] == '\\':
+                backslash_count += 1
+                j -= 1
+
+            if backslash_count % 2 == 1:
+                # 在字符串内部的引号，需要转义
+                result.append('\\"')
+            else:
+                # 字符串边界，保留原样
+                result.append(char)
+        else:
+            result.append(char)
+
+        i += 1
+
+    fixed = ''.join(result)
+
+    # 验证修复后的JSON
+    try:
+        json.loads(fixed)
+        return fixed
+    except json.JSONDecodeError:
+        # 修复失败，返回原始内容（让后续报错更清晰）
+        return content
+
+
+@tool
 def save_resume_tool(content: str = "", user_id: int = None) -> str:
     """
     将格式化后的简历数据保存到数据库
@@ -482,17 +548,29 @@ def save_resume_tool(content: str = "", user_id: int = None) -> str:
         if match:
             content = match.group()
 
-    # 解析并保存到数据库
+    # 尝试解析JSON，如果失败则尝试修复后再次解析
     try:
         resume_data = json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"[save_resume_tool] 首次JSON解析失败，尝试修复: {e}")
+        fixed_content = fix_unquoted_json_strings(content)
+        try:
+            resume_data = json.loads(fixed_content)
+            print(f"[save_resume_tool] 修复后解析成功")
+        except json.JSONDecodeError as e2:
+            print(f"[save_resume_tool] 修复后仍然失败: {e2}")
+            return f"保存失败：JSON 解析错误 - {str(e)}"
+
+    # 保存到数据库
+    try:
         print(f"[save_resume_tool] 开始保存简历，用户ID={user_id}")
         print(f"[save_resume_tool] resume_data keys: {list(resume_data.keys()) if isinstance(resume_data, dict) else 'not a dict'}")
         result = update_resume(resume_data, user_id=user_id)
         print(f"[save_resume_tool] 保存结果: {result}")
         return result
-    except json.JSONDecodeError as e:
-        print(f"[save_resume_tool] JSON解析错误: {e}")
-        return f"保存失败：JSON 格式错误"
+    except Exception as e:
+        print(f"[save_resume_tool] 保存错误: {e}")
+        return f"保存失败：{str(e)}"
 
 
 # 工具列表 - conversation_llm 只能调用 save_resume_tool
@@ -830,8 +908,31 @@ async def tool_node(state: AgentState) -> dict:
                             result = "保存失败：没有找到修改后的简历数据"
                             saved_resume = False
                         else:
-                            # 解析 JSON 数据
-                            updated_resume_data = json.loads(content)
+                            # 解析 JSON 数据，失败时尝试修复
+                            try:
+                                updated_resume_data = json.loads(content)
+                            except json.JSONDecodeError as e:
+                                print(f"[Tool] 首次JSON解析失败，尝试修复: {e}")
+                                fixed_content = fix_unquoted_json_strings(content)
+                                try:
+                                    updated_resume_data = json.loads(fixed_content)
+                                    print(f"[Tool] 修复后解析成功")
+                                except json.JSONDecodeError as e2:
+                                    print(f"[Tool] 修复后仍然失败: {e2}")
+                                    result = f"保存失败：JSON 解析错误 - {str(e)}"
+                                    saved_resume = False
+                                    # 仍然需要设置 result 变量并返回，但这里已经返回了
+                                    # 直接跳到后面清除 pending_confirmation
+                                    pending_confirmation = None
+                                    return {
+                                        "messages": state.messages + [ToolMessage(content=result)],
+                                        "resume_data": state.resume_data,
+                                        "jd_data": state.jd_data,
+                                        "pending_confirmation": pending_confirmation,
+                                        "just_saved": False,
+                                        "user_id": state.user_id
+                                    }
+
                             # 直接调用 update_resume 保存
                             from tools import update_resume
                             result = update_resume(updated_resume_data, user_id=state.user_id)
