@@ -704,6 +704,7 @@ async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), c
         except Exception:
             request_data = {}
         style = request_data.get('style', {})
+        lang = request_data.get('lang', 'zh')  # 默认中文
 
         # 从数据库获取简历
         resume_data = get_user_resume(db, current_user.id)
@@ -716,7 +717,7 @@ async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), c
         photo = resume_obj.photo if resume_obj and resume_obj.photo else None
 
         generate_pdf = get_pdf_generator()
-        pdf_bytes = generate_pdf(resume_data, style, photo)
+        pdf_bytes = generate_pdf(resume_data, style, photo, lang)
 
         return StreamingResponse(
             iter([pdf_bytes]),

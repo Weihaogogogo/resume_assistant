@@ -51,6 +51,19 @@ python create_admin.py
 ```bash
 # 查看所有用户
 docker exec -it deepagents-backend python -c "import sqlite3; conn = sqlite3.connect('/app/data/deepagents.db'); cursor = conn.cursor(); cursor.execute('SELECT id, email, invite_code, created_at FROM users'); print(cursor.fetchall()); conn.close()"
+```
+
+> **项目统计（截至2026-03-05）：**
+> - 用户总数：162个
+> - 测试用户：19个
+> - 查询用户名的指令：
+> ```python
+> import sqlite3; conn = sqlite3.connect('/app/data/deepagents.db'); cursor = conn.cursor(); cursor.execute('SELECT user_id, resume_data FROM resumes'); import json; rows = [(r[0], json.loads(r[1]).get('basics',{}).get('name','N/A')) for r in cursor.fetchall()]; print('\n'.join([f"简历ID: {r[0]}, 用户名: {r[1]}" for r in rows])); conn.close()
+> ```
+
+```bash
+# 查看所有用户
+docker exec -it deepagents-backend python -c "import sqlite3; conn = sqlite3.connect('/app/data/deepagents.db'); cursor = conn.cursor(); cursor.execute('SELECT id, email, invite_code, created_at FROM users'); print(cursor.fetchall()); conn.close()"
 
 # 查看简历表
 docker exec -it deepagents-backend python -c "import sqlite3; conn = sqlite3.connect('/app/data/deepagents.db'); cursor = conn.cursor(); cursor.execute('SELECT id, user_id, name, parsing_status FROM resumes'); print(cursor.fetchall()); conn.close()"

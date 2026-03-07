@@ -8,6 +8,43 @@ import re
 from weasyprint import HTML
 
 
+# 语言字典
+LABELS = {
+    'zh': {
+        'education': '教育经历',
+        'workExperience': '工作经历',
+        'projectExperience': '项目经历',
+        'others': '其他',
+        'selfEvaluation': '自我评价',
+        'targetPosition': '目标岗位',
+        'skills': '技能',
+        'certificates': '证书',
+        'language': '语言',
+        'thesis': '论文',
+        'nameNotSet': '姓名未填写',
+        'schoolNotSet': '学校未填写',
+        'companyNotSet': '公司未填写',
+        'projectNotSet': '项目未填写',
+    },
+    'en': {
+        'education': 'Education',
+        'workExperience': 'Work Experience',
+        'projectExperience': 'Project Experience',
+        'others': 'Others',
+        'selfEvaluation': 'Self Evaluation',
+        'targetPosition': 'Target Position',
+        'skills': 'Skills',
+        'certificates': 'Certificates',
+        'language': 'Language',
+        'thesis': 'Thesis',
+        'nameNotSet': 'Name Not Set',
+        'schoolNotSet': 'School Not Set',
+        'companyNotSet': 'Company Not Set',
+        'projectNotSet': 'Project Not Set',
+    }
+}
+
+
 def format_markdown(text: str) -> str:
     """格式化Markdown语法为HTML"""
     if not text or not isinstance(text, str):
@@ -20,14 +57,18 @@ def format_markdown(text: str) -> str:
     return text
 
 
-def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = None) -> str:
+def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = None, lang: str = 'zh') -> str:
     """将简历数据渲染为HTML
 
     Args:
         resume_data: 简历数据字典
         style: 样式参数，包括marginTop, marginBottom, marginLeft, marginRight, moduleMargin, lineHeight, fontSize
         photo: 证件照base64编码（可选，如果为None则从resume_data中提取）
+        lang: 语言，'zh' 或 'en'
     """
+    # 获取语言标签
+    labels = LABELS.get(lang, LABELS['zh'])
+
     # 默认样式
     style = style or {}
     margin_top = style.get('marginTop', 9)  # mm
@@ -73,14 +114,14 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
         
         # 目标岗位
         if basics.get("target_position"):
-            html_parts.append(f'<div class="target-position">目标岗位：{basics["target_position"]}</div>')
+            html_parts.append(f'<div class="target-position">{labels["targetPosition"]}：{basics["target_position"]}</div>')
         
         html_parts.append('</div>')  # personal-info
 
     # 教育经历
     if resume_data.get("education") and len(resume_data["education"]) > 0:
         html_parts.append('<section class="section">')
-        html_parts.append('<h2 class="section-title">教育经历</h2>')
+        html_parts.append(f'<h2 class="section-title">{labels["education"]}</h2>')
 
         for edu in resume_data["education"]:
             html_parts.append('<div class="education-item">')
@@ -116,7 +157,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
             # 论文
             if edu.get("theses") and len(edu["theses"]) > 0:
                 html_parts.append('<div class="theses">')
-                html_parts.append('<h4 class="subfield-title">论文</h4>')
+                html_parts.append(f'<h4 class="subfield-title">{labels["thesis"]}</h4>')
                 for thesis in edu["theses"]:
                     if isinstance(thesis, dict):
                         html_parts.append('<div class="thesis-item">')
@@ -137,7 +178,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
     # 工作经历
     if resume_data.get("work_experience") and len(resume_data["work_experience"]) > 0:
         html_parts.append('<section class="section">')
-        html_parts.append('<h2 class="section-title">工作经历</h2>')
+        html_parts.append(f'<h2 class="section-title">{labels["workExperience"]}</h2>')
 
         for work in resume_data["work_experience"]:
             html_parts.append('<div class="work-item">')
@@ -179,7 +220,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
     # 项目经历
     if resume_data.get("project_experience") and len(resume_data["project_experience"]) > 0:
         html_parts.append('<section class="section">')
-        html_parts.append('<h2 class="section-title">项目经历</h2>')
+        html_parts.append(f'<h2 class="section-title">{labels["projectExperience"]}</h2>')
 
         for project in resume_data["project_experience"]:
             html_parts.append('<div class="project-item">')
@@ -228,11 +269,11 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
 
         if has_others:
             html_parts.append('<section class="section others">')
-            html_parts.append('<h2 class="section-title">其他</h2>')
+            html_parts.append(f'<h2 class="section-title">{labels["others"]}</h2>')
 
             if others.get("skills") and len(others["skills"]) > 0:
                 html_parts.append('<div class="others-item cert-lang-line">')
-                html_parts.append('<span class="cert-lang-label">技能：</span>')
+                html_parts.append(f'<span class="cert-lang-label">{labels["skills"]}：</span>')
                 for idx, skill in enumerate(others["skills"]):
                     html_parts.append(f'<span class="inline-list-item">{format_markdown(skill)}</span>')
                     if idx < len(others["skills"]) - 1:
@@ -241,7 +282,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
 
             if others.get("certificates") and len(others["certificates"]) > 0:
                 html_parts.append('<div class="others-item cert-lang-line">')
-                html_parts.append('<span class="cert-lang-label">证书：</span>')
+                html_parts.append(f'<span class="cert-lang-label">{labels["certificates"]}：</span>')
                 for idx, cert in enumerate(others["certificates"]):
                     html_parts.append(f'<span class="inline-list-item">{format_markdown(cert)}</span>')
                     if idx < len(others["certificates"]) - 1:
@@ -250,7 +291,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
 
             if others.get("languages") and len(others["languages"]) > 0:
                 html_parts.append('<div class="others-item cert-lang-line">')
-                html_parts.append('<span class="cert-lang-label">语言：</span>')
+                html_parts.append(f'<span class="cert-lang-label">{labels["language"]}：</span>')
                 for idx, lang in enumerate(others["languages"]):
                     html_parts.append(f'<span class="inline-list-item">{format_markdown(lang)}</span>')
                     if idx < len(others["languages"]) - 1:
@@ -262,7 +303,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
     # 自我评价
     if resume_data.get("self_evaluation") and len(resume_data["self_evaluation"]) > 0:
         html_parts.append('<section class="section self-evaluation">')
-        html_parts.append('<h2 class="section-title">自我评价</h2>')
+        html_parts.append(f'<h2 class="section-title">{labels["selfEvaluation"]}</h2>')
         for eval_item in resume_data["self_evaluation"]:
             html_parts.append(f'<div class="self-eval-item">{format_markdown(eval_item)}</div>')
         html_parts.append('</section>')
@@ -597,7 +638,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
     return full_html
 
 
-def generate_pdf(resume_data: dict, style: dict = None, photo: str = None) -> bytes:
+def generate_pdf(resume_data: dict, style: dict = None, photo: str = None, lang: str = 'zh') -> bytes:
     """
     根据简历数据生成PDF
 
@@ -605,10 +646,11 @@ def generate_pdf(resume_data: dict, style: dict = None, photo: str = None) -> by
         resume_data: 简历数据字典
         style: 样式参数（可选）
         photo: 证件照base64编码（可选）
+        lang: 语言，'zh' 或 'en'（可选）
 
     Returns:
         PDF文件的二进制数据
     """
-    html_content = render_resume_to_html(resume_data, style, photo)
+    html_content = render_resume_to_html(resume_data, style, photo, lang)
     pdf = HTML(string=html_content, base_url=os.getcwd()).write_pdf()
     return pdf

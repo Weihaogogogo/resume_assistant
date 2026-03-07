@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onUnmounted } from 'vue'
+import { labels } from '../utils/labels.js'
 
 const props = defineProps({
   data: {
@@ -24,10 +25,19 @@ const props = defineProps({
     type: Boolean,
     required: false,
     default: false
+  },
+  // 语言：'zh' | 'en'
+  lang: {
+    type: String,
+    required: false,
+    default: 'zh'
   }
 })
 
-const emit = defineEmits(['open-jd-dialog', 'open-resume-edit'])
+// 获取当前语言的标签
+const t = computed(() => labels[props.lang] || labels.zh)
+
+const emit = defineEmits(['open-jd-dialog', 'open-resume-edit', 'toggle-lang'])
 
 // 检测是否为移动端视图
 const isMobile = computed(() => props.isMobileView || window.innerWidth < 1200)
@@ -141,7 +151,7 @@ const allItems = computed(() => {
     }
   }
 
-  // 每条自我评价独立分页
+  // 每条{{ t.selfEvaluation }}独立分页
   if (props.data.self_evaluation && props.data.self_evaluation.length) {
     items.push({ type: 'self-eval-title', index: index++, visible: true })
     props.data.self_evaluation.forEach((_, i) => {
@@ -462,7 +472,8 @@ const exportPDF = async () => {
       },
       body: JSON.stringify({
         resume_data: props.data,
-        style: style
+        style: style,
+        lang: props.lang
       })
     })
 
@@ -680,6 +691,11 @@ const getItemIndex = (type, dataIndex) => {
             </div>
           </div>
           <div class="toolbar-section toolbar-actions">
+            <!-- 语言切换 -->
+            <div class="lang-toggle">
+              <span :class="{ active: lang === 'zh' }" @click="emit('toggle-lang', 'zh')">中</span>
+              <span :class="{ active: lang === 'en' }" @click="emit('toggle-lang', 'en')">EN</span>
+            </div>
             <button
               class="jd-upload-btn"
               @click="emit('open-resume-edit')"
@@ -736,13 +752,13 @@ const getItemIndex = (type, dataIndex) => {
           <span v-if="data.basics?.email" v-html="formatText(data.basics.email)"></span>
         </div>
         <div v-if="data.basics?.target_position" class="target-position">
-          目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
+          {{ t.targetPosition }}：<span v-html="formatText(data.basics.target_position)"></span>
         </div>
       </div>
 
-      <!-- 教育经历 -->
+      <!-- {{ t.education }} -->
       <template v-if="data.education && data.education.length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">教育经历</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">{{ t.education }}</h2>
         <div v-for="(item, idx) in data.education" :key="idx" class="pageable-item education-item">
           <div class="education-header">
             <div class="school-info">
@@ -759,7 +775,7 @@ const getItemIndex = (type, dataIndex) => {
           <template v-for="(item, idx) in data.education">
             <template v-if="item.theses?.length">
               <div v-for="(thesis, tIdx) in item.theses" :key="'thesis-'+idx+'-'+tIdx" class="pageable-item thesis-item">
-                <h4 class="subfield-title">论文</h4>
+                <h4 class="subfield-title">{{ t.thesis }}</h4>
                 <div class="thesis-title" v-html="formatText(thesis.title)"></div>
                 <ul v-if="thesis.details?.length" class="list-items">
                   <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
@@ -770,9 +786,9 @@ const getItemIndex = (type, dataIndex) => {
         </template>
       </template>
 
-      <!-- 工作经历 -->
+      <!-- {{ t.workExperience }} -->
       <template v-if="data.work_experience && data.work_experience.length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">工作经历</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">{{ t.workExperience }}</h2>
         <div v-for="(item, idx) in data.work_experience" :key="idx" class="pageable-item work-item">
           <div class="work-header">
             <div class="work-main">
@@ -793,9 +809,9 @@ const getItemIndex = (type, dataIndex) => {
         </template>
       </template>
 
-      <!-- 项目经历 -->
+      <!-- {{ t.projectExperience }} -->
       <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">项目经历</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">{{ t.projectExperience }}</h2>
         <div v-for="(item, idx) in (data.project_experience || data.projects)" :key="idx" class="pageable-item project-item">
           <div class="project-header">
             <div class="project-name" v-html="formatText(item.project_name || item.name || '项目未填写')"></div>
@@ -823,7 +839,7 @@ const getItemIndex = (type, dataIndex) => {
         <!-- 技能一行显示 -->
         <template v-if="data.others.skills?.length">
           <div class="pageable-item cert-lang-line">
-            <span class="cert-lang-label">技能：</span>
+            <span class="cert-lang-label">{{ t.skills }}：</span>
             <template v-for="(skill, sIdx) in data.others.skills">
               <span v-html="formatText(skill)"></span><span v-if="sIdx < data.others.skills.length - 1" class="cert-lang-separator"> | </span>
             </template>
@@ -832,7 +848,7 @@ const getItemIndex = (type, dataIndex) => {
         <!-- 证书一行显示 -->
         <template v-if="data.others.certificates?.length">
           <div class="pageable-item cert-lang-line">
-            <span class="cert-lang-label">证书：</span>
+            <span class="cert-lang-label">{{ t.certificates }}：</span>
             <template v-for="(cert, cIdx) in data.others.certificates">
               <span v-html="formatText(cert)"></span><span v-if="cIdx < data.others.certificates.length - 1" class="cert-lang-separator"> | </span>
             </template>
@@ -841,7 +857,7 @@ const getItemIndex = (type, dataIndex) => {
         <!-- 语言一行显示 -->
         <template v-if="data.others.languages?.length">
           <div class="pageable-item cert-lang-line">
-            <span class="cert-lang-label">语言：</span>
+            <span class="cert-lang-label">{{ t.language }}：</span>
             <template v-for="(lang, lIdx) in data.others.languages">
               <span v-html="formatText(lang)"></span><span v-if="lIdx < data.others.languages.length - 1" class="cert-lang-separator"> | </span>
             </template>
@@ -849,10 +865,10 @@ const getItemIndex = (type, dataIndex) => {
         </template>
       </template>
 
-      <!-- 自我评价 -->
+      <!-- {{ t.selfEvaluation }} -->
       <template v-if="data.self_evaluation && data.self_evaluation.length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">自我评价</h2>
-        <!-- 每条自我评价独立分页 -->
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">{{ t.selfEvaluation }}</h2>
+        <!-- 每条{{ t.selfEvaluation }}独立分页 -->
         <template v-for="(item, idx) in data.self_evaluation">
           <div v-if="item" :key="'self-eval-'+idx" class="pageable-item self-eval-item">
             <span v-html="formatText(item)"></span>
@@ -877,13 +893,13 @@ const getItemIndex = (type, dataIndex) => {
           <span v-if="data.basics?.email" v-html="formatText(data.basics.email)"></span>
         </div>
         <div v-if="data.basics?.target_position" class="target-position">
-          目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
+          {{ t.targetPosition }}：<span v-html="formatText(data.basics.target_position)"></span>
         </div>
       </div>
 
-      <!-- 教育经历 -->
+      <!-- {{ t.education }} -->
       <template v-if="data.education && data.education.length">
-        <h2 class="section-title">教育经历</h2>
+        <h2 class="section-title">{{ t.education }}</h2>
         <div v-for="(item, idx) in data.education" :key="idx" class="education-item">
           <div class="education-header">
             <div class="school-info">
@@ -898,7 +914,7 @@ const getItemIndex = (type, dataIndex) => {
           <!-- 论文 -->
           <template v-if="item.theses?.length">
             <div v-for="(thesis, tIdx) in item.theses" :key="'thesis-'+idx+'-'+tIdx" class="thesis-item">
-              <h4 class="subfield-title">论文</h4>
+              <h4 class="subfield-title">{{ t.thesis }}</h4>
               <div class="thesis-title" v-html="formatText(thesis.title)"></div>
               <ul v-if="thesis.details?.length" class="list-items">
                 <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
@@ -908,9 +924,9 @@ const getItemIndex = (type, dataIndex) => {
         </div>
       </template>
 
-      <!-- 工作经历 -->
+      <!-- {{ t.workExperience }} -->
       <template v-if="data.work_experience && data.work_experience.length">
-        <h2 class="section-title">工作经历</h2>
+        <h2 class="section-title">{{ t.workExperience }}</h2>
         <div v-for="(item, idx) in data.work_experience" :key="idx" class="work-item">
           <div class="work-header">
             <div class="work-main">
@@ -925,9 +941,9 @@ const getItemIndex = (type, dataIndex) => {
         </div>
       </template>
 
-      <!-- 项目经历 -->
+      <!-- {{ t.projectExperience }} -->
       <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
-        <h2 class="section-title">项目经历</h2>
+        <h2 class="section-title">{{ t.projectExperience }}</h2>
         <div v-for="(item, idx) in (data.project_experience || data.projects)" :key="idx" class="project-item">
           <div class="project-header">
             <div class="project-name" v-html="formatText(item.project_name || item.name || '项目未填写')"></div>
@@ -947,28 +963,28 @@ const getItemIndex = (type, dataIndex) => {
       <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
         <h2 class="section-title">其他</h2>
         <div v-if="data.others.skills?.length" class="cert-lang-line">
-          <span class="cert-lang-label">技能：</span>
+          <span class="cert-lang-label">{{ t.skills }}：</span>
           <template v-for="(skill, sIdx) in data.others.skills" :key="'skill-'+sIdx">
             <span v-html="formatText(skill)"></span><span v-if="sIdx < data.others.skills.length - 1" class="cert-lang-separator"> | </span>
           </template>
         </div>
         <div v-if="data.others.certificates?.length" class="cert-lang-line">
-          <span class="cert-lang-label">证书：</span>
+          <span class="cert-lang-label">{{ t.certificates }}：</span>
           <template v-for="(cert, cIdx) in data.others.certificates" :key="'cert-'+cIdx">
             <span v-html="formatText(cert)"></span><span v-if="cIdx < data.others.certificates.length - 1" class="cert-lang-separator"> | </span>
           </template>
         </div>
         <div v-if="data.others.languages?.length" class="cert-lang-line">
-          <span class="cert-lang-label">语言：</span>
+          <span class="cert-lang-label">{{ t.language }}：</span>
           <template v-for="(lang, lIdx) in data.others.languages" :key="'lang-'+lIdx">
             <span v-html="formatText(lang)"></span><span v-if="lIdx < data.others.languages.length - 1" class="cert-lang-separator"> | </span>
           </template>
         </div>
       </template>
 
-      <!-- 自我评价 -->
+      <!-- {{ t.selfEvaluation }} -->
       <template v-if="data.self_evaluation && data.self_evaluation.length">
-        <h2 class="section-title">自我评价</h2>
+        <h2 class="section-title">{{ t.selfEvaluation }}</h2>
         <template v-for="(item, idx) in data.self_evaluation">
           <div v-if="item" :key="'self-eval-'+idx" class="self-eval-item" v-html="formatText(item)"></div>
         </template>
@@ -994,13 +1010,13 @@ const getItemIndex = (type, dataIndex) => {
                 <span v-if="data.basics.email" v-html="formatText(data.basics.email)"></span>
               </div>
               <div v-if="data.basics.target_position" class="target-position">
-                目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
+                {{ t.targetPosition }}：<span v-html="formatText(data.basics.target_position)"></span>
               </div>
             </div>
 
-            <!-- 教育经历 -->
+            <!-- {{ t.education }} -->
             <template v-if="data.education && data.education.length">
-              <h2 v-if="isItemVisible({index: getItemIndex('education-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">教育经历</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('education-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">{{ t.education }}</h2>
               <template v-for="(item, idx) in data.education">
                 <div v-if="isItemVisible({index: getItemIndex('education-item', idx)}, page - 1)" :key="'edu-'+idx" class="education-item" :class="{ 'content-highlight': highlightedModule === 'education' }">
                   <div class="education-header">
@@ -1018,7 +1034,7 @@ const getItemIndex = (type, dataIndex) => {
                 <template v-if="item.theses?.length">
                   <template v-for="(thesis, tIdx) in item.theses">
                     <div v-if="isItemVisible({index: getItemIndex('thesis-item', `${idx}-${tIdx}`)}, page - 1)" :key="'thesis-'+idx+'-'+tIdx" class="thesis-item">
-                      <h4 class="subfield-title">论文</h4>
+                      <h4 class="subfield-title">{{ t.thesis }}</h4>
                       <div class="thesis-title" v-html="formatText(thesis.title)"></div>
                       <ul v-if="thesis.details?.length" class="list-items">
                         <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
@@ -1029,9 +1045,9 @@ const getItemIndex = (type, dataIndex) => {
               </template>
             </template>
 
-            <!-- 工作经历 -->
+            <!-- {{ t.workExperience }} -->
             <template v-if="data.work_experience && data.work_experience.length">
-              <h2 v-if="isItemVisible({index: getItemIndex('work-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">工作经历</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('work-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">{{ t.workExperience }}</h2>
               <template v-for="(item, idx) in data.work_experience">
                 <div v-if="isItemVisible({index: getItemIndex('work-item', idx)}, page - 1)" :key="'work-'+idx" class="work-item" :class="{ 'content-highlight': highlightedModule === 'work_experience' }">
                   <div class="work-header">
@@ -1051,9 +1067,9 @@ const getItemIndex = (type, dataIndex) => {
               </template>
             </template>
 
-            <!-- 项目经历 -->
+            <!-- {{ t.projectExperience }} -->
             <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
-              <h2 v-if="isItemVisible({index: getItemIndex('projects-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">项目经历</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('projects-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">{{ t.projectExperience }}</h2>
               <template v-for="(item, idx) in (data.project_experience || data.projects)">
                 <div v-if="isItemVisible({index: getItemIndex('project-item', idx)}, page - 1)" :key="'proj-'+idx" class="project-item" :class="{ 'content-highlight': highlightedModule === 'project_experience' }">
                   <div class="project-header">
@@ -1080,7 +1096,7 @@ const getItemIndex = (type, dataIndex) => {
               <!-- 技能一行显示 -->
               <template v-if="data.others.skills?.length">
                 <div v-if="isItemVisible({index: getItemIndex('skill-line', 0)}, page - 1)" class="cert-lang-line">
-                  <span class="cert-lang-label">技能：</span>
+                  <span class="cert-lang-label">{{ t.skills }}：</span>
                   <template v-for="(skill, sIdx) in data.others.skills">
                     <span v-html="formatText(skill)"></span><span v-if="sIdx < data.others.skills.length - 1" class="cert-lang-separator"> | </span>
                   </template>
@@ -1089,7 +1105,7 @@ const getItemIndex = (type, dataIndex) => {
               <!-- 证书一行显示 -->
               <template v-if="data.others.certificates?.length">
                 <div v-if="isItemVisible({index: getItemIndex('cert-line', 0)}, page - 1)" class="cert-lang-line">
-                  <span class="cert-lang-label">证书：</span>
+                  <span class="cert-lang-label">{{ t.certificates }}：</span>
                   <template v-for="(cert, cIdx) in data.others.certificates">
                     <span v-html="formatText(cert)"></span><span v-if="cIdx < data.others.certificates.length - 1" class="cert-lang-separator"> | </span>
                   </template>
@@ -1098,7 +1114,7 @@ const getItemIndex = (type, dataIndex) => {
               <!-- 语言一行显示 -->
               <template v-if="data.others.languages?.length">
                 <div v-if="isItemVisible({index: getItemIndex('lang-line', 0)}, page - 1)" class="cert-lang-line">
-                  <span class="cert-lang-label">语言：</span>
+                  <span class="cert-lang-label">{{ t.language }}：</span>
                   <template v-for="(lang, lIdx) in data.others.languages">
                     <span v-html="formatText(lang)"></span><span v-if="lIdx < data.others.languages.length - 1" class="cert-lang-separator"> | </span>
                   </template>
@@ -1106,10 +1122,10 @@ const getItemIndex = (type, dataIndex) => {
               </template>
             </template>
 
-            <!-- 自我评价 -->
+            <!-- {{ t.selfEvaluation }} -->
             <template v-if="data.self_evaluation && data.self_evaluation.length">
-              <h2 v-if="isItemVisible({index: getItemIndex('self-eval-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">自我评价</h2>
-              <!-- 每条自我评价独立分页 -->
+              <h2 v-if="isItemVisible({index: getItemIndex('self-eval-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">{{ t.selfEvaluation }}</h2>
+              <!-- 每条{{ t.selfEvaluation }}独立分页 -->
               <template v-for="(item, idx) in data.self_evaluation">
                 <div v-if="item && isItemVisible({index: getItemIndex('self-eval-item', idx)}, page - 1)" :key="'self-eval-'+idx" class="self-eval-item" :class="{ 'content-highlight': highlightedModule === 'self_evaluation' }">
                   <span v-html="formatText(item)"></span>
@@ -1330,6 +1346,30 @@ const getItemIndex = (type, dataIndex) => {
   cursor: not-allowed;
   box-shadow: none;
   transform: none;
+}
+/* 语言切换 */
+.lang-toggle {
+  display: flex;
+  border: 1px solid #303030;
+}
+.lang-toggle span {
+  padding: 0.4rem 0.6rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.lang-toggle span:first-child {
+  border-right: 1px solid #303030;
+}
+.lang-toggle span.active {
+  background: #303030;
+  color: #f8bebe;
+}
+.lang-toggle span:not(.active):hover {
+  background: #f0f0f0;
 }
 /* JD上传按钮 */
 .jd-upload-btn {

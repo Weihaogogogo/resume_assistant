@@ -5,11 +5,16 @@ import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import RichTextEditor from './components/RichTextEditor.vue'
 import MobileTabBar from './components/MobileTabBar.vue'
+import { labels } from './utils/labels.js'
 
 // 响应式布局状态
 const isMobileView = ref(false)
 const currentTab = ref('chat')
 let resizeObserver = null
+
+// 语言状态
+const currentLang = ref('zh')
+const showTranslateConfirm = ref(false)
 
 // 检测是否为移动端视图
 function checkMobileView() {
@@ -37,6 +42,40 @@ function showTooltip(event, text) {
 function hideTooltip() {
   tooltipState.value.visible = false
 }
+
+// 语言切换函数
+function switchLang(lang) {
+  // 即时切换语言
+  currentLang.value = lang
+
+  // 如果是从中文切换到英文，弹窗询问是否翻译
+  if (lang === 'en') {
+    showTranslateConfirm.value = true
+  }
+}
+
+// 确认翻译
+function confirmTranslate() {
+  showTranslateConfirm.value = false
+
+  // 在聊天区域发送翻译请求
+  const translateMessage = "请将简历内容翻译为英文，需要符合英文表达习惯，保留原汁原味，不要添加或虚构内容。"
+
+  // 调用现有的发送消息逻辑
+  userInput.value = translateMessage
+  sendMessage()
+}
+
+// 取消翻译
+function cancelTranslate() {
+  showTranslateConfirm.value = false
+}
+
+// 获取当前语言的标签
+const t = computed(() => labels[currentLang.value] || labels.zh)
+
+// 翻译弹窗始终使用中文
+const translateLabels = computed(() => labels.zh)
 
 // 认证状态
 const isLoggedIn = ref(false)
@@ -2624,7 +2663,7 @@ watch(
       <!-- 右侧简历预览区 -->
       <div class="resume-section">
         <div class="resume-content">
-          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
+          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
         </div>
       </div>
       </template>
@@ -2707,7 +2746,7 @@ watch(
 
           <!-- 简历 Tab 内容 -->
           <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" key="resume">
-            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
+            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
           </div>
         </Transition>
 
@@ -2774,6 +2813,29 @@ watch(
             >
               发送 (Ctrl+Enter)
             </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 翻译确认弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showTranslateConfirm" class="translate-dialog-overlay" @click.self="cancelTranslate">
+        <div class="translate-dialog">
+          <div class="dialog-header">
+            <h3>{{ translateLabels.translateConfirmTitle }}</h3>
+            <button class="dialog-close-btn" @click="cancelTranslate" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+          <div class="dialog-body">
+            <p>{{ translateLabels.translateConfirmMessage }}</p>
+          </div>
+          <div class="dialog-footer">
+            <button class="cancel-btn" @click="cancelTranslate">{{ translateLabels.cancel }}</button>
+            <button class="confirm-btn" @click="confirmTranslate">{{ translateLabels.confirm }}</button>
           </div>
         </div>
       </div>
@@ -4212,6 +4274,88 @@ watch(
 .dialog-fade-enter-from .fullscreen-dialog,
 .dialog-fade-leave-to .fullscreen-dialog {
   transform: scale(0.95);
+}
+
+/* ==================== 翻译确认弹窗样式 ==================== */
+.translate-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.translate-dialog {
+  background-color: rgb(254, 253, 251);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-repeat: repeat;
+  border: 1px solid #303030;
+  border-radius: 0;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: none;
+}
+
+.translate-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #303030;
+  background-color: transparent;
+}
+
+.translate-dialog .dialog-header h3 {
+  font-size: 0.875rem;
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+.translate-dialog .dialog-body {
+  padding: 1.5rem;
+}
+
+.translate-dialog .dialog-body p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #303030;
+  line-height: 1.6;
+}
+
+.translate-dialog .dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid #303030;
+}
+
+.translate-dialog .confirm-btn {
+  background: #303030;
+  color: #f8bebe;
+  border: 1px solid #303030;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.translate-dialog .confirm-btn:hover {
+  background: #4a4a4a;
 }
 
 /* ==================== JD上传弹窗样式（新增） ==================== */
