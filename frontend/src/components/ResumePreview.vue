@@ -835,7 +835,7 @@ const getItemIndex = (type, dataIndex) => {
 
       <!-- 其他 -->
       <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'others' }" data-module="others">其他</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'others' }" data-module="others">{{ t.others }}</h2>
         <!-- 技能一行显示 -->
         <template v-if="data.others.skills?.length">
           <div class="pageable-item cert-lang-line">
@@ -1092,7 +1092,7 @@ const getItemIndex = (type, dataIndex) => {
 
             <!-- 其他 -->
             <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
-              <h2 v-if="isItemVisible({index: getItemIndex('others-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'others' }" data-module="others">其他</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('others-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'others' }" data-module="others">{{ t.others }}</h2>
               <!-- 技能一行显示 -->
               <template v-if="data.others.skills?.length">
                 <div v-if="isItemVisible({index: getItemIndex('skill-line', 0)}, page - 1)" class="cert-lang-line">

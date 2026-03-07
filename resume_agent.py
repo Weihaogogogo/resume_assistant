@@ -523,13 +523,15 @@ def fix_unquoted_json_strings(content: str) -> str:
 
 
 @tool
-def save_resume_tool(content: str = "", user_id: int = None) -> str:
+def save_resume_tool(content: str = "", user_id: int = None, session_id: str = "default", lang: str = "zh") -> str:
     """
-    将格式化后的简历数据保存到数据库
+    将格式化后的简历数据保存到数据库（Session级别，支持双语）
 
     Args:
         content: JSON 格式的简历数据
         user_id: 用户ID（从状态中传递）
+        session_id: 会话ID（用于Session级别存储）
+        lang: 语言，'zh' 或 'en'（保存到对应的简历字段）
     """
     import re
     from tools import update_resume
@@ -564,9 +566,9 @@ def save_resume_tool(content: str = "", user_id: int = None) -> str:
 
     # 保存到数据库
     try:
-        print(f"[save_resume_tool] 开始保存简历，用户ID={user_id}")
+        print(f"[save_resume_tool] 开始保存简历: user_id={user_id}, session_id={session_id}, lang={lang}")
         print(f"[save_resume_tool] resume_data keys: {list(resume_data.keys()) if isinstance(resume_data, dict) else 'not a dict'}")
-        result = update_resume(resume_data, user_id=user_id)
+        result = update_resume(resume_data, user_id=user_id, session_id=session_id, lang=lang)
         print(f"[save_resume_tool] 保存结果: {result}")
         return result
     except Exception as e:
@@ -594,6 +596,8 @@ class AgentState:
         pending_confirmation: 待确认状态（用于显示确认按钮）
         just_saved: 标记刚保存了简历，用于引导 LLM 不再调用工具
         user_id: 当前用户ID，用于数据隔离
+        lang: 当前语言，'zh' 或 'en'，AI根据此参数修改对应语言的简历
+        session_id: 会话ID，用于Session级别数据存储
     """
     messages: list = field(default_factory=list)
     resume_data: dict = None  # None 表示尚未读取简历
@@ -601,6 +605,8 @@ class AgentState:
     pending_confirmation: dict = None  # 待确认状态
     just_saved: bool = False  # 刚保存简历后设置为 True
     user_id: int = None  # 当前用户ID
+    lang: str = 'zh'  # 当前语言，默认为中文
+    session_id: str = "default"  # 会话ID
 
 
 # =============================================================================
@@ -837,7 +843,9 @@ async def conversation_node(state: AgentState) -> dict:
         "jd_data": state.jd_data or {},
         "pending_confirmation": pending_conf,
         "just_saved": False,  # 清除 just_saved 标记
-        "user_id": state.user_id  # 保留用户ID
+        "user_id": state.user_id,  # 保留用户ID
+        "lang": state.lang,  # 保留语言设置
+        "session_id": state.session_id  # 保留会话ID
     }
     
     # 创建临时状态对象用于调试
@@ -931,12 +939,19 @@ async def tool_node(state: AgentState) -> dict:
                                         "jd_data": state.jd_data,
                                         "pending_confirmation": pending_confirmation,
                                         "just_saved": False,
-                                        "user_id": state.user_id
+                                        "user_id": state.user_id,
+                                        "lang": state.lang,
+                                        "session_id": state.session_id
                                     }
 
                             # 直接调用 update_resume 保存
                             from tools import update_resume
-                            result = update_resume(updated_resume_data, user_id=state.user_id)
+                            result = update_resume(
+                                updated_resume_data,
+                                user_id=state.user_id,
+                                session_id=state.session_id,
+                                lang=state.lang
+                            )
                             saved_resume = True
                             print(f"[Tool] 保存结果: {result}")
                     except json.JSONDecodeError as e:
@@ -988,7 +1003,9 @@ async def tool_node(state: AgentState) -> dict:
             "jd_data": state.jd_data or {},
             "pending_confirmation": pending_confirmation,
             "just_saved": saved_resume,
-            "user_id": state.user_id
+            "user_id": state.user_id,
+            "lang": state.lang,
+            "session_id": state.session_id
         }
     
     # 普通工具调用处理
@@ -996,7 +1013,14 @@ async def tool_node(state: AgentState) -> dict:
     if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
         print("=== [End] tool_node (no tool_calls) 耗时: 0.00s ===\n")
         # 没有工具调用时，返回原始消息（保持上下文）
-        return {"messages": list(state.messages), "resume_data": state.resume_data or {}, "jd_data": state.jd_data or {}}
+        return {
+            "messages": list(state.messages),
+            "resume_data": state.resume_data or {},
+            "jd_data": state.jd_data or {},
+            "user_id": state.user_id,
+            "lang": state.lang,
+            "session_id": state.session_id
+        }
 
     # 打印工具调用信息
     print(f"Tool calls: {[tc.name if hasattr(tc, 'name') else tc.get('name') for tc in last_message.tool_calls]}")
@@ -1041,9 +1065,11 @@ async def tool_node(state: AgentState) -> dict:
                         updated_resume_data = json.loads(content)
                     except json.JSONDecodeError:
                         updated_resume_data = None
-                    
-                    # 传递 user_id
+
+                    # 传递 user_id, session_id, lang
                     tool_args['user_id'] = state.user_id
+                    tool_args['session_id'] = state.session_id
+                    tool_args['lang'] = state.lang
                     
                     # 生成确认标记，返回给前端
                     confirm_id = str(uuid.uuid4())[:8]
@@ -1109,7 +1135,9 @@ async def tool_node(state: AgentState) -> dict:
         "jd_data": state.jd_data or {},
         "pending_confirmation": pending_confirmation,
         "just_saved": saved_resume,
-        "user_id": state.user_id
+        "user_id": state.user_id,
+        "lang": state.lang,
+        "session_id": state.session_id
     }
 
 

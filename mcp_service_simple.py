@@ -40,7 +40,9 @@ from database import (
     init_db, get_db, create_user, get_user_by_email,
     save_user_resume, get_user_resume, save_user_jd, get_user_jd,
     check_invite_code, use_invite_code, create_invite_code,
-    get_parsing_status, set_parsing_status
+    get_parsing_status, set_parsing_status,
+    get_session_resume, save_session_resume, get_session_jd, save_session_jd,
+    ensure_session_exists, Conversation, get_session_photo, save_session_photo
 )
 from auth import (
     verify_password, get_password_hash, create_access_token,
@@ -49,6 +51,89 @@ from auth import (
 
 # PDF 生成器 - 懒加载（在 API 调用时才导入）
 _pdf_generator = None
+
+# =============================================================================
+# 懒加载迁移函数（用户级别 -> Session级别）
+# =============================================================================
+
+def migrate_resume_if_needed(db, user_id: int, session_id: str):
+    """懒加载迁移：如果session没有简历，从用户级别Resume表复制
+
+    Args:
+        db: 数据库会话
+        user_id: 用户ID
+        session_id: 会话ID
+    """
+    # 确保会话存在
+    conv = ensure_session_exists(db, user_id, session_id)
+
+    # 如果zh_resume为空，从用户级Resume表复制
+    if not conv.zh_resume or conv.zh_resume == {}:
+        old_resume = get_user_resume(db, user_id)
+        if old_resume and old_resume != {}:
+            # 迁移时保留用户级简历的所有字段
+            conv.zh_resume = old_resume
+
+            # 从Resume表获取证件照，保存到conversation.photo（两个语言共用）
+            from database import Resume
+            resume_db = db.query(Resume).filter(Resume.user_id == user_id).first()
+            if resume_db and resume_db.photo:
+                # 保存到conversation.photo字段
+                conv.photo = resume_db.photo
+
+            db.commit()
+            print(f"[Migrate] 从用户级简历迁移到session级: session_id={session_id}")
+
+    # 如果photo为空，也尝试从Resume表迁移
+    if not conv.photo:
+        from database import Resume
+        resume_db = db.query(Resume).filter(Resume.user_id == user_id).first()
+        if resume_db and resume_db.photo:
+            conv.photo = resume_db.photo
+            db.commit()
+            print(f"[Migrate] 迁移photo到conversation表: session_id={session_id}")
+
+    # 如果jd_data为空，从用户级JD表复制
+    if not conv.jd_data or conv.jd_data == {}:
+        old_jd = get_user_jd(db, user_id)
+        if old_jd and old_jd != {}:
+            conv.jd_data = old_jd
+            db.commit()
+            print(f"[Migrate] 从用户级JD迁移到session级: session_id={session_id}")
+
+    return conv
+
+
+def migrate_database_columns():
+    """数据库迁移：确保新列存在"""
+    from sqlalchemy import text
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        # 检查并添加新列
+        columns_to_add = [
+            ("zh_resume", "JSON DEFAULT '{}'"),
+            ("en_resume", "JSON DEFAULT '{}'"),
+            ("jd_data", "JSON DEFAULT '{}'"),
+            ("photo", "TEXT DEFAULT ''")
+        ]
+
+        for column_name, column_def in columns_to_add:
+            try:
+                # 尝试添加列
+                db.execute(text(f"ALTER TABLE conversations ADD {column_name} {column_def}"))
+                db.commit()
+                print(f"[Migration] 添加列 {column_name} 成功")
+            except Exception as e:
+                # 如果列已存在，忽略错误
+                if "duplicate column" in str(e).lower():
+                    print(f"[Migration] 列 {column_name} 已存在，跳过")
+                else:
+                    # 其他错误可能是由于SQLite版本或其他原因，记录但不中断
+                    print(f"[Migration] 添加列 {column_name} 跳过: {e}")
+    finally:
+        db.close()
+
 
 # =============================================================================
 # 上下文压缩状态管理
@@ -263,6 +348,9 @@ app.add_middleware(
 # 初始化数据库
 init_db()
 
+# 数据库迁移：添加新列
+migrate_database_columns()
+
 
 # =============================================================================
 # 认证端点
@@ -387,14 +475,35 @@ async def health_check():
     return {"status": "ok", "version": "2.0.0"}
 
 
+class LoadResumeRequest(BaseModel):
+    """加载简历请求"""
+    session_id: str = "default"
+    lang: str = "zh"
+
+
 @app.post("/load_resume")
-async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+async def load_resume_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
     加载当前用户的简历数据
+
+    支持session级别的中英文简历：
+    - 如果session_id为空，使用"default"
+    - lang参数指定加载中文(zh)还是英文(en)简历
+    - 首次访问时自动从用户级简历迁移到session级
     """
     try:
-        print(f"[load_resume] user_id={current_user.id}, email={current_user.email}")
-        resume_data = get_user_resume(db, current_user.id)
+        # 解析请求参数
+        request_data = await request.json()
+        session_id = request_data.get('session_id', 'default')
+        lang = request_data.get('lang', 'zh')
+
+        print(f"[load_resume] user_id={current_user.id}, session_id={session_id}, lang={lang}")
+
+        # 懒加载迁移：从用户级简历迁移到session级
+        migrate_resume_if_needed(db, current_user.id, session_id)
+
+        # 从session级获取简历
+        resume_data = get_session_resume(db, current_user.id, session_id, lang)
 
         # 打印加载的数据
         if resume_data and isinstance(resume_data, dict):
@@ -403,10 +512,8 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
         else:
             print(f"[load_resume] 未找到简历数据")
 
-        # 获取证件照
-        from database import Resume
-        resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
-        photo = resume_obj.photo if resume_obj and resume_obj.photo else ""
+        # 获取证件照（从Conversation表获取，两个语言共用）
+        photo = get_session_photo(db, current_user.id, session_id)
 
         # 将 photo 放入 resume_data 的 basics 中（保持向前兼容）
         if resume_data and isinstance(resume_data, dict):
@@ -437,13 +544,41 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
         return JSONResponse(content={"parsing_status": "none"}, status_code=200)
 
 
+class SaveResumeSessionRequest(BaseModel):
+    """保存简历到Session级别请求"""
+    resume_data: dict
+    session_id: str = "default"
+    lang: str = "zh"
+
+
 @app.post("/save_resume")
-async def save_resume_endpoint(request: SaveResumeRequest, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+async def save_resume_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
-    保存当前用户的简历数据
+    保存当前用户的简历数据到Session级别
+
+    支持session级别的中英文简历：
+    - session_id指定会话ID
+    - lang参数指定保存到中文(zh)还是英文(en)简历
     """
     try:
-        save_user_resume(db, current_user.id, request.resume_data)
+        request_data = await request.json()
+        resume_data = request_data.get('resume_data', {})
+        session_id = request_data.get('session_id', 'default')
+        lang = request_data.get('lang', 'zh')
+
+        print(f"[save_resume] user_id={current_user.id}, session_id={session_id}, lang={lang}")
+
+        # 保存到session级别
+        save_session_resume(db, current_user.id, session_id, resume_data, lang)
+
+        # 保存照片到conversation表（两个语言共用）
+        photo = resume_data.get('basics', {}).get('photo', '')
+        if photo:
+            save_session_photo(db, current_user.id, session_id, photo)
+
+        # 同时保存到用户级Resume表（保持向前兼容）
+        save_user_resume(db, current_user.id, resume_data)
+
         return JSONResponse(content={"success": True})
     except Exception as e:
         import traceback
@@ -451,13 +586,32 @@ async def save_resume_endpoint(request: SaveResumeRequest, db: Session = Depends
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
+class LoadJDRequest(BaseModel):
+    """加载JD请求"""
+    session_id: str = "default"
+
+
+class SaveJDRequest(BaseModel):
+    """保存JD请求"""
+    jd_data: dict
+    session_id: str = "default"
+
+
 @app.post("/load_jd")
-async def load_jd_endpoint(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+async def load_jd_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
-    加载当前用户的JD数据
+    加载当前用户的JD数据（Session级别）
     """
     try:
-        jd_data = get_user_jd(db, current_user.id)
+        request_data = await request.json()
+        session_id = request_data.get('session_id', 'default')
+
+        # 懒加载迁移
+        migrate_resume_if_needed(db, current_user.id, session_id)
+
+        # 从session级获取JD
+        jd_data = get_session_jd(db, current_user.id, session_id)
+
         if isinstance(jd_data, dict) and "error" in jd_data:
             return JSONResponse(content={}, status_code=500)
         return JSONResponse(content=jd_data)
@@ -468,14 +622,20 @@ async def load_jd_endpoint(db: Session = Depends(get_db), current_user = Depends
 @app.post("/save_jd")
 async def save_jd_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
-    保存当前用户的JD数据
+    保存当前用户的JD数据（Session级别）
     """
     try:
         request_data = await request.json()
         jd_data = request_data.get('jd_data', {})
+        session_id = request_data.get('session_id', 'default')
 
         company = jd_data.get('company', '')
         position = jd_data.get('position', '')
+
+        # 保存到session级别
+        save_session_jd(db, current_user.id, session_id, jd_data)
+
+        # 同时保存到用户级（保持向前兼容）
         save_user_jd(db, current_user.id, jd_data, company, position)
 
         return JSONResponse(content={"success": True})
@@ -736,6 +896,7 @@ async def chat_endpoint(
     message: str = Form(""),
     files: list[UploadFile] = File(default=[]),
     session_id: str = Form(""),
+    lang: str = Form("zh"),
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -743,8 +904,9 @@ async def chat_endpoint(
     聊天接口
 
     - 需要认证
-    - 从数据库加载用户数据
+    - 从数据库加载用户数据（Session级别，支持双语）
     - 设置全局用户ID供工具使用
+    - lang参数指定当前语言（zh/en），AI修改对应语言的简历
     """
     try:
         # 生成会话 ID
@@ -757,7 +919,7 @@ async def chat_endpoint(
         # 检测用户是否点击了确认按钮（必须在使用 message 之前）
         is_confirm_click = '[CONFIRM_REPLY:' in message.strip()
 
-        print(f"[DEBUG] session_id: {session_id}")
+        print(f"[DEBUG] session_id: {session_id}, lang: {lang}")
         print(f"[DEBUG] is_confirm_click: {is_confirm_click}")
         print(f"[DEBUG] message.strip(): {message.strip()[:100]}...")
 
@@ -782,9 +944,12 @@ async def chat_endpoint(
                     "image_url": {"url": f"data:{file.content_type};base64,{base64_content}"}
                 })
 
-        # 从数据库加载用户数据
-        resume_data = get_user_resume(db, current_user.id)
-        jd_data = get_user_jd(db, current_user.id)
+        # 懒加载迁移：从用户级数据迁移到Session级
+        migrate_resume_if_needed(db, current_user.id, session_id)
+
+        # 从Session级别加载简历（根据lang参数）
+        resume_data = get_session_resume(db, current_user.id, session_id, lang)
+        jd_data = get_session_jd(db, current_user.id, session_id)
 
         # 创建用户消息（包含文本和图片附件）
         # 检查是否有图片附件
@@ -819,9 +984,9 @@ async def chat_endpoint(
         all_messages = list(historical_messages) + [current_message]
         print(f"[InitState] 从数据库加载 {len(historical_messages)} 条历史消息 + 当前消息")
 
-        # 使用数据库中的数据
-        initial_resume_data = resume_data if resume_data else (get_user_resume(db, current_user.id) or {})
-        initial_jd_data = jd_data if jd_data else (get_user_jd(db, current_user.id) or {})
+        # 使用Session级别的数据（已通过migrate_resume_if_needed迁移）
+        initial_resume_data = resume_data if resume_data else {}
+        initial_jd_data = jd_data if jd_data else {}
 
         # 从数据库获取待确认状态
         from database import get_pending_confirmation
@@ -839,7 +1004,9 @@ async def chat_endpoint(
             "resume_data": initial_resume_data,
             "jd_data": initial_jd_data,
             "pending_confirmation": initial_pending_confirmation,  # 从数据库加载待确认状态
-            "user_id": current_user.id  # 添加用户ID，用于数据隔离
+            "user_id": current_user.id,  # 添加用户ID，用于数据隔离
+            "lang": lang,  # 当前语言，AI根据此参数修改对应语言的简历
+            "session_id": session_id  # 会话ID，用于Session级别数据存储
         }
         print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息, pending_confirmation={initial_state.get('pending_confirmation') is not None}")
         for i, msg in enumerate(all_messages):
@@ -1098,11 +1265,16 @@ async def chat_endpoint(
                 final_content = "抱歉，我无法理解您的请求。"
 
             print(f"[SSE] 准备发送 final 事件, pending_confirmation={pending_confirmation_result is not None}")
-            yield 'data: ' + json.dumps({
-                "type": "final",
-                "content": final_content,
-                "session_id": session_id
-            }) + '\n\n'
+
+            # 当pending_confirmation存在时，说明已经发送了confirm事件，不再发送final事件
+            if not pending_confirmation_result:
+                yield 'data: ' + json.dumps({
+                    "type": "final",
+                    "content": final_content,
+                    "session_id": session_id
+                }) + '\n\n'
+            else:
+                print(f"[SSE] pending_confirmation存在，跳过final事件")
 
             # 保存消息到数据库（异步执行，不阻塞 SSE 响应）
             import asyncio

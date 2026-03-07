@@ -59,7 +59,8 @@ export const labels = {
 
     // 弹窗
     translateConfirmTitle: '翻译确认',
-    translateConfirmMessage: '是否将简历内容翻译为英文？翻译后的内容将覆盖当前简历。',
+    translateToEnMessage: '是否将简历内容翻译为英文？翻译后的内容将保存到英文简历中，不会影响中文简历。',
+    translateToZhMessage: '是否将简历内容翻译为中文？翻译后的内容将保存到中文简历中，不会影响英文简历。',
 
     // PDF
     resume: '简历',
@@ -123,7 +124,8 @@ export const labels = {
 
     // 弹窗
     translateConfirmTitle: 'Translation Confirmation',
-    translateConfirmMessage: 'Do you want to translate the resume content to English?',
+    translateToEnMessage: 'Do you want to translate the resume content to English? The translated content will be saved to the English resume and will not affect the Chinese resume.',
+    translateToZhMessage: 'Do you want to translate the resume content to Chinese? The translated content will be saved to the Chinese resume and will not affect the English resume.',
 
     // PDF
     resume: 'Resume',

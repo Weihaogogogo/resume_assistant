@@ -6,7 +6,7 @@
 import os
 import json
 from sqlalchemy.orm import Session
-from database import get_db, save_user_resume, get_user_resume, save_user_jd, get_user_jd
+from database import get_db, save_user_resume, get_user_resume, save_user_jd, get_user_jd, save_session_resume, ensure_session_exists
 
 
 def list_directory(path: str) -> str:
@@ -52,14 +52,16 @@ def write_file(file_path: str, content: str) -> str:
 # 数据库操作函数（新增）
 # =============================================================================
 
-def update_resume(data: dict, user_id: int = None, db: Session = None) -> str:
+def update_resume(data: dict, user_id: int = None, db: Session = None, session_id: str = "default", lang: str = "zh") -> str:
     """
-    更新用户简历到 SQLite
+    更新用户简历到 SQLite（Session级别，支持双语）
 
     Args:
         data: 简历数据字典
-        user_id: 用户ID（可选，如果不提供则从 db 获取）
+        user_id: 用户ID（可选，如果不提供则从 resume_agent 获取）
         db: 数据库会话（可选，如果不提供则创建新的）
+        session_id: 会话ID（用于Session级别存储）
+        lang: 语言，'zh' 或 'en'（保存到对应的简历字段）
 
     Returns:
         str: 操作结果消息
@@ -81,7 +83,17 @@ def update_resume(data: dict, user_id: int = None, db: Session = None) -> str:
         if user_id is None:
             return "错误：无法确定用户身份，请先登录"
 
+        print(f"[update_resume] 保存简历: user_id={user_id}, session_id={session_id}, lang={lang}")
+
+        # 先确保会话存在
+        ensure_session_exists(db, user_id, session_id)
+
+        # 保存到Session级别（双语支持）
+        save_session_resume(db, user_id, session_id, data, lang)
+
+        # 同时保存到用户级别（保持向前兼容）
         save_user_resume(db, user_id, data)
+
         db.commit()  # 显式提交事务
         return "简历已成功保存到数据库"
     except Exception as e:

@@ -15,6 +15,7 @@ let resizeObserver = null
 // 语言状态
 const currentLang = ref('zh')
 const showTranslateConfirm = ref(false)
+const pendingLang = ref('zh')  // 切换语言时的目标语言
 
 // 检测是否为移动端视图
 function checkMobileView() {
@@ -44,19 +45,129 @@ function hideTooltip() {
 }
 
 // 语言切换函数
-function switchLang(lang) {
-  // 即时切换语言
-  currentLang.value = lang
+async function switchLang(lang) {
+  // AI未结束回复时禁止切换
+  if (isLoading.value || isResponding.value) {
+    return
+  }
 
-  // 如果是从中文切换到英文，弹窗询问是否翻译
-  if (lang === 'en') {
+  const targetLang = lang
+  const sourceLang = targetLang === 'zh' ? 'en' : 'zh'
+
+  console.log(`[switchLang] 切换到${targetLang}, 当前zhResume=${JSON.stringify(zhResume.value)}, enResume=${JSON.stringify(enResume.value)}`)
+
+  // 判断简历是否有实际内容（不只是有basics对象）
+  const hasRealContent = (resume) => {
+    if (!resume) return false
+    // 检查是否有实际内容：basics有name，或者有education/work_experience等
+    const basics = resume.basics || {}
+    const hasName = !!basics.name
+    const hasEducation = (resume.education && resume.education.length > 0)
+    const hasWork = (resume.work_experience && resume.work_experience.length > 0)
+    const hasProject = (resume.project_experience && resume.project_experience.length > 0)
+    const hasOthers = (resume.others && (resume.others.skills?.length > 0 || resume.others.certificates?.length > 0 || resume.others.languages?.length > 0))
+    const hasSelfEval = (resume.self_evaluation && resume.self_evaluation.length > 0)
+    return hasName || hasEducation || hasWork || hasProject || hasOthers || hasSelfEval
+  }
+
+  // 获取切换前的目标简历状态（用于判断是否需要弹窗）
+  const targetResumeBeforeSwitch = targetLang === 'zh' ? zhResume.value : enResume.value
+  const wasTargetEmpty = !hasRealContent(targetResumeBeforeSwitch)
+
+  console.log(`[switchLang] targetResumeBeforeSwitch=${JSON.stringify(targetResumeBeforeSwitch)}, wasTargetEmpty=${wasTargetEmpty}`)
+
+  // 获取源语言简历
+  const sourceResume = sourceLang === 'zh' ? zhResume.value : enResume.value
+  const isSourceHasContent = hasRealContent(sourceResume)
+
+  console.log(`[switchLang] sourceResume=${JSON.stringify(sourceResume)}, isSourceHasContent=${isSourceHasContent}`)
+
+  // 步骤1：如果目标语言简历为空，则复制源语言简历到目标语言并保存
+  if (wasTargetEmpty && isSourceHasContent) {
+    console.log(`[switchLang] 步骤1：复制简历`)
+    const copiedResume = JSON.parse(JSON.stringify(sourceResume))
+    if (targetLang === 'zh') {
+      zhResume.value = copiedResume
+    } else {
+      enResume.value = copiedResume
+    }
+    // 保存到数据库
+    await saveResumeToBackend(copiedResume, targetLang)
+    console.log(`[switchLang] 从${sourceLang}复制简历到${targetLang}并保存`)
+  } else {
+    console.log(`[switchLang] 跳过步骤1: wasTargetEmpty=${wasTargetEmpty}, isSourceHasContent=${isSourceHasContent}`)
+  }
+
+  // 步骤2：从后端重新加载目标语言的最新简历
+  try {
+    const response = await fetch('/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        session_id: sessionId.value || 'default',
+        lang: targetLang
+      })
+    })
+
+    if (response.ok) {
+      const latestResume = await response.json()
+
+      // 更新对应语言的简历缓存
+      if (targetLang === 'zh') {
+        zhResume.value = latestResume
+      } else {
+        enResume.value = latestResume
+      }
+
+      // 切换语言
+      currentLang.value = targetLang
+      resumeData.value = latestResume
+
+      console.log(`[switchLang] 切换到${targetLang === 'zh' ? '中文' : '英文'}，已重新加载简历`)
+    }
+  } catch (error) {
+    console.error('切换语言时加载简历失败:', error)
+  }
+
+  // 步骤3：如果目标简历原本为空（现在已复制），弹窗询问是否翻译
+  if (wasTargetEmpty && isSourceHasContent) {
+    console.log(`[switchLang] 步骤3：显示翻译弹窗`)
+    pendingLang.value = targetLang
     showTranslateConfirm.value = true
+  }
+  // 步骤4：如果目标简历原本就不为空，直接切换，不弹窗
+}
+
+// 保存简历到后端
+async function saveResumeToBackend(resumeDataToSave, lang) {
+  try {
+    await fetch('/save_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        resume_data: resumeDataToSave,
+        session_id: sessionId.value || 'default',
+        lang: lang
+      })
+    })
+    console.log(`[switchLang] 已保存${lang === 'zh' ? '中文' : '英文'}简历到数据库`)
+  } catch (error) {
+    console.error('保存简历失败:', error)
   }
 }
 
 // 确认翻译
 function confirmTranslate() {
   showTranslateConfirm.value = false
+
+  // 设置目标语言
+  currentLang.value = pendingLang.value
+  resumeData.value = enResume.value
+
+  // 确保英文简历已保存到数据库
+  if (enResume.value) {
+    saveResumeToBackend(enResume.value, 'en')
+  }
 
   // 在聊天区域发送翻译请求
   const translateMessage = "请将简历内容翻译为英文，需要符合英文表达习惯，保留原汁原味，不要添加或虚构内容。"
@@ -69,13 +180,35 @@ function confirmTranslate() {
 // 取消翻译
 function cancelTranslate() {
   showTranslateConfirm.value = false
+  // 切换到英文但不翻译
+  currentLang.value = pendingLang.value
+  resumeData.value = enResume.value
+
+  // 确保英文简历已保存到数据库
+  if (enResume.value) {
+    saveResumeToBackend(enResume.value, 'en')
+  }
 }
 
 // 获取当前语言的标签
 const t = computed(() => labels[currentLang.value] || labels.zh)
 
-// 翻译弹窗始终使用中文
-const translateLabels = computed(() => labels.zh)
+// 翻译弹窗文案（根据目标语言显示）
+const translateLabels = computed(() => {
+  const lang = labels.zh
+  // 根据pendingLang决定显示中文还是英文的翻译确认文案
+  if (pendingLang.value === 'en') {
+    return {
+      ...lang,
+      translateConfirmMessage: lang.translateToEnMessage
+    }
+  } else {
+    return {
+      ...lang,
+      translateConfirmMessage: lang.translateToZhMessage
+    }
+  }
+})
 
 // 认证状态
 const isLoggedIn = ref(false)
@@ -97,8 +230,12 @@ const fileInput = ref(null)
 const userInput = ref('')
 // 上传的文件列表
 const uploadedFiles = ref([])
-// 简历数据
+// 简历数据（当前显示的）
 const resumeData = ref(null)
+// 中文简历数据
+const zhResume = ref(null)
+// 英文简历数据
+const enResume = ref(null)
 // JD数据（新增）
 const jdData = ref(null)
 // 加载状态
@@ -344,24 +481,45 @@ async function loadInitialData() {
   isLoadingInitialData.value = true
   console.log('[DEBUG] loadInitialData: 开始加载...')
 
+  const currentSessionId = sessionId.value || 'default'
+  const currentLangValue = currentLang.value
+
   try {
-    const response = await fetch('/load_resume', {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({})
-    })
+    // 分别加载中文和英文简历
+    const [zhResponse, enResponse] = await Promise.all([
+      fetch('/load_resume', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: currentSessionId, lang: 'zh' })
+      }),
+      fetch('/load_resume', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: currentSessionId, lang: 'en' })
+      })
+    ])
 
     // 如果认证失败，跳转登录
-    if (response.status === 401) {
+    if (zhResponse.status === 401 || enResponse.status === 401) {
       logout()
       return
     }
 
-    const data = await response.json()
-    resumeData.value = data
+    const zhData = await zhResponse.json()
+    const enData = await enResponse.json()
 
-    // 检查解析状态
-    const parsingStatus = data.parsing_status || 'none'
+    // 分别保存到对应的变量
+    zhResume.value = zhData
+    enResume.value = enData
+
+    // 设置当前显示的简历
+    resumeData.value = currentLangValue === 'zh' ? zhData : enData
+
+    console.log(`[DEBUG] loadInitialData: 中文简历加载完成, keys=${Object.keys(zhData).length}`)
+    console.log(`[DEBUG] loadInitialData: 英文简历加载完成, keys=${Object.keys(enData).length}`)
+
+    // 检查解析状态（使用中文简历的状态）
+    const parsingStatus = zhData.parsing_status || 'none'
     console.log(`[DEBUG] loadInitialData: parsingStatus="${parsingStatus}"`)
 
     // 如果正在解析中，显示上传弹窗并启动轮询
@@ -386,7 +544,7 @@ async function loadInitialData() {
       const jdResponse = await fetch('/load_jd', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({})
+        body: JSON.stringify({ session_id: sessionId.value || 'default' })
       })
       if (jdResponse.status === 401) {
         logout()
@@ -402,7 +560,7 @@ async function loadInitialData() {
 
     // 检查是否首次进入（无简历且无聊天记录）
     // 修正判断逻辑：检查basics中是否有有效字段
-    const { parsing_status, basics, ...rest } = data
+    const { parsing_status, basics, ...rest } = zhData
     const hasResume = basics && (basics.name || basics.target_position || Object.keys(rest).length > 0)
     console.log(`[DEBUG] loadInitialData: hasResume=${hasResume}, basics=${JSON.stringify(basics)}`)
 
@@ -576,13 +734,16 @@ function stopParsingStatusPoll() {
   }
 }
 
-// 加载简历数据（不检查解析状态）
+// 加载简历数据（支持双语）
 async function loadResumeData() {
   try {
     const response = await fetch('/load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        session_id: sessionId.value || 'default',
+        lang: currentLang.value
+      })
     })
 
     if (response.status === 401) {
@@ -591,11 +752,21 @@ async function loadResumeData() {
     }
 
     const data = await response.json()
+
+    // 根据当前语言保存到对应的简历
+    if (currentLang.value === 'zh') {
+      zhResume.value = data
+    } else {
+      enResume.value = data
+    }
+
+    // 同时更新 resumeData 供显示
     resumeData.value = data
+
     // 更新简历内容
     const { parsing_status, ...resumeContent } = data
     if (resumeContent && Object.keys(resumeContent).length > 0) {
-      console.log('✅ 简历数据已加载')
+      console.log(`✅ 简历数据已加载 (${currentLang.value})`)
     }
   } catch (error) {
     console.error('加载简历数据失败:', error)
@@ -690,6 +861,7 @@ async function sendMessage() {
     const formData = new FormData()
     formData.append('message', input)
     formData.append('session_id', sessionId.value)
+    formData.append('lang', currentLang.value)
 
     // 添加上传的文件
     // 注意：uploadedFiles 在函数开头已被清空，这里附件信息已保存在 currentAttachments 中
@@ -922,6 +1094,7 @@ async function handleOptionClick({ confirm_id, value }) {
     const formData = new FormData()
     formData.append('message', confirmMessage)
     formData.append('session_id', sessionId.value)
+    formData.append('lang', currentLang.value)
 
     const response = await fetch('/chat', {
       method: 'POST',
@@ -1015,21 +1188,31 @@ function detectChangedModule(oldData, newData) {
   return ''
 }
 
-// 更新简历数据
+// 更新简历数据（使用当前语言）
 async function updateResumeData() {
   try {
     // 先从服务器获取新数据
     const response = await fetch('/load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        session_id: sessionId.value || 'default',
+        lang: currentLang.value
+      })
     })
     const newData = await response.json()
 
     // 保存旧数据用于比较
     const oldData = resumeData.value ? JSON.parse(JSON.stringify(resumeData.value)) : null
 
-    // 先更新数据
+    // 更新当前语言的简历缓存
+    if (currentLang.value === 'zh') {
+      zhResume.value = newData
+    } else {
+      enResume.value = newData
+    }
+
+    // 更新显示
     resumeData.value = newData
 
     // 检测变化并触发高亮
@@ -1491,15 +1674,27 @@ function addResumeLang() {
   }
 }
 
-// 加载简历数据
+// 加载简历数据（使用当前语言）
 async function loadResume() {
   try {
     const response = await fetch('/load_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        session_id: sessionId.value || 'default',
+        lang: currentLang.value
+      })
     })
     const data = await response.json()
+
+    // 更新当前语言的简历缓存
+    if (currentLang.value === 'zh') {
+      zhResume.value = data
+    } else {
+      enResume.value = data
+    }
+
+    // 更新显示
     resumeData.value = data
   } catch (error) {
     console.error('加载简历失败:', error)
@@ -1566,7 +1761,11 @@ async function saveResume() {
     const response = await fetch('/save_resume', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ resume_data: dataToSave })
+      body: JSON.stringify({
+        resume_data: dataToSave,
+        session_id: sessionId.value || 'default',
+        lang: currentLang.value
+      })
     })
 
     if (response.ok) {
@@ -2082,6 +2281,13 @@ async function parseAndSaveResume() {
     const data = await response.json()
 
     if (data.success) {
+      // 更新当前语言的简历缓存
+      if (currentLang.value === 'zh') {
+        zhResume.value = data.resume_data
+      } else {
+        enResume.value = data.resume_data
+      }
+
       // 更新简历数据
       resumeData.value = data.resume_data
       closeUploadDialog()

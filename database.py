@@ -69,6 +69,11 @@ class Conversation(Base):
     messages = Column(JSON, default=list)  # 完整的聊天历史
     compressed_context = Column(JSON, default=list)  # 压缩后的上下文（用于性能）
     pending_confirmation = Column(JSON, default=None)  # 待确认状态
+    # 双语简历支持（session级别）
+    zh_resume = Column(JSON, default=dict)  # 中文简历
+    en_resume = Column(JSON, default=dict)  # 英文简历
+    jd_data = Column(JSON, default=dict)    # JD数据（从原Resume表迁移）
+    photo = Column(Text, default="")  # 证件照（两个语言共用）
     last_accessed = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -328,3 +333,126 @@ def delete_conversation_context(db, user_id: int, session_id: str):
         Conversation.session_id == session_id
     ).update({"compressed_context": []})
     db.commit()
+
+
+# =============================================================================
+# Session级别的简历访问函数（双语支持）
+# =============================================================================
+
+def get_session_resume(db, user_id: int, session_id: str, lang: str = 'zh') -> dict:
+    """获取指定session的简历
+
+    Args:
+        db: 数据库会话
+        user_id: 用户ID
+        session_id: 会话ID
+        lang: 语言，'zh' 或 'en'
+
+    Returns:
+        简历数据字典
+    """
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        return {}
+    if lang == 'zh':
+        return conv.zh_resume if conv.zh_resume else {}
+    else:
+        return conv.en_resume if conv.en_resume else {}
+
+
+def save_session_resume(db, user_id: int, session_id: str, resume_data: dict, lang: str = 'zh'):
+    """保存指定session的简历
+
+    Args:
+        db: 数据库会话
+        user_id: 用户ID
+        session_id: 会话ID
+        resume_data: 简历数据
+        lang: 语言，'zh' 或 'en'
+    """
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        # 如果会话不存在，先创建
+        return
+
+    if lang == 'zh':
+        conv.zh_resume = resume_data
+    else:
+        conv.en_resume = resume_data
+    db.commit()
+
+
+def get_session_jd(db, user_id: int, session_id: str) -> dict:
+    """获取指定session的JD数据"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        return {}
+    return conv.jd_data if conv.jd_data else {}
+
+
+def save_session_jd(db, user_id: int, session_id: str, jd_data: dict):
+    """保存指定session的JD数据"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        return
+    conv.jd_data = jd_data
+    db.commit()
+
+
+def ensure_session_exists(db, user_id: int, session_id: str) -> Conversation:
+    """确保会话存在，如果不存在则创建"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+
+    if not conv:
+        conv = Conversation(
+            user_id=user_id,
+            session_id=session_id,
+            messages=[],
+            compressed_context=[],
+            zh_resume={},
+            en_resume={},
+            jd_data={},
+            photo=""
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
+    return conv
+
+
+def get_session_photo(db, user_id: int, session_id: str) -> str:
+    """获取会话的照片"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    return conv.photo if conv and conv.photo else ""
+
+
+def save_session_photo(db, user_id: int, session_id: str, photo: str):
+    """保存会话的照片"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if conv:
+        conv.photo = photo
+        db.commit()
+
+    return conv
