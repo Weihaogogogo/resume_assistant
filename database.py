@@ -4,6 +4,7 @@ SQLAlchemy 模型定义和数据库连接
 """
 
 import os
+import uuid
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, JSON, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -66,6 +67,7 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     session_id = Column(String(36), nullable=False)
+    title = Column(String(50), nullable=False, default="新会话")
     messages = Column(JSON, default=list)  # 完整的聊天历史
     compressed_context = Column(JSON, default=list)  # 压缩后的上下文（用于性能）
     pending_confirmation = Column(JSON, default=None)  # 待确认状态
@@ -74,6 +76,7 @@ class Conversation(Base):
     en_resume = Column(JSON, default=dict)  # 英文简历
     jd_data = Column(JSON, default=dict)    # JD数据（从原Resume表迁移）
     photo = Column(Text, default="")  # 证件照（两个语言共用）
+    migrated_from_old = Column(Boolean, default=False)  # 是否已从旧表迁移
     last_accessed = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -218,7 +221,7 @@ def save_conversation(db, user_id: int, session_id: str, messages: list):
     if conv:
         conv.messages = messages
     else:
-        conv = Conversation(user_id=user_id, session_id=session_id, messages=messages)
+        conv = Conversation(user_id=user_id, session_id=session_id, title="新会话", messages=messages)
         db.add(conv)
     db.commit()
     return conv
@@ -274,6 +277,7 @@ def save_conversation_context(db, user_id: int, session_id: str, compressed_cont
         conv = Conversation(
             user_id=user_id,
             session_id=session_id,
+            title="新会话",
             compressed_context=compressed_context,
             pending_confirmation=pending_confirmation,
             messages=[]  # 初始化为空，由前端通过 /save_conversation 保存
@@ -351,16 +355,46 @@ def get_session_resume(db, user_id: int, session_id: str, lang: str = 'zh') -> d
     Returns:
         简历数据字典
     """
+    print(f"[DEBUG get_session_resume] user_id={user_id}, session_id={session_id}, lang={lang}")
     conv = db.query(Conversation).filter(
         Conversation.user_id == user_id,
         Conversation.session_id == session_id
     ).first()
     if not conv:
+        print(f"[DEBUG get_session_resume] 会话不存在")
         return {}
-    if lang == 'zh':
-        return conv.zh_resume if conv.zh_resume else {}
-    else:
-        return conv.en_resume if conv.en_resume else {}
+    
+    print(f"[DEBUG get_session_resume] conv.migrated_from_old={conv.migrated_from_old}")
+    print(f"[DEBUG get_session_resume] zh_resume keys={list(conv.zh_resume.keys()) if conv.zh_resume else 'None'}")
+    print(f"[DEBUG get_session_resume] en_resume keys={list(conv.en_resume.keys()) if conv.en_resume else 'None'}")
+    
+    # 只有在没有中文简历数据且未迁移过的情况下，才迁移旧数据
+    if not conv.migrated_from_old and (not conv.zh_resume or not conv.zh_resume.get('basics')):
+        old_resume = get_user_resume(db, user_id)
+        if old_resume and isinstance(old_resume, dict) and old_resume.get('basics'):
+            # 旧简历默认迁移到中文字段（旧系统没有语言区分）
+            conv.zh_resume = old_resume
+            conv.migrated_from_old = True
+            db.commit()
+            print(f"[DEBUG get_session_resume] 已迁移旧简历到 zh_resume")
+            # 根据请求的语言返回对应字段
+            return conv.zh_resume if lang == 'zh' else conv.en_resume
+        else:
+            print(f"[DEBUG get_session_resume] 旧简历不存在或无效，跳过迁移")
+    elif conv.zh_resume and conv.zh_resume.get('basics'):
+        print(f"[DEBUG get_session_resume] zh_resume 已有数据，跳过迁移")
+    elif conv.migrated_from_old:
+        print(f"[DEBUG get_session_resume] 已标记迁移过，跳过迁移")
+    
+    resume_field = conv.zh_resume if lang == 'zh' else conv.en_resume
+    print(f"[DEBUG get_session_resume] 返回 {lang} 简历, has_data={bool(resume_field)}")
+    if resume_field:
+        basics = resume_field.get('basics', {})
+        print(f"[DEBUG get_session_resume] 返回简历 name={basics.get('name')}, target={basics.get('target_position')}")
+        return resume_field
+    
+    print(f"[DEBUG get_session_resume] 返回空简历")
+    return {}
 
 
 def save_session_resume(db, user_id: int, session_id: str, resume_data: dict, lang: str = 'zh'):
@@ -373,19 +407,27 @@ def save_session_resume(db, user_id: int, session_id: str, resume_data: dict, la
         resume_data: 简历数据
         lang: 语言，'zh' 或 'en'
     """
+    print(f"[DEBUG save_session_resume] user_id={user_id}, session_id={session_id}, lang={lang}")
+    basics = resume_data.get('basics', {}) if resume_data else {}
+    print(f"[DEBUG save_session_resume] 保存简历 name={basics.get('name')}, target={basics.get('target_position')}")
+    
     conv = db.query(Conversation).filter(
         Conversation.user_id == user_id,
         Conversation.session_id == session_id
     ).first()
     if not conv:
         # 如果会话不存在，先创建
+        print(f"[DEBUG save_session_resume] 会话不存在，无法保存")
         return
 
     if lang == 'zh':
         conv.zh_resume = resume_data
+        print(f"[DEBUG save_session_resume] 已保存到 zh_resume")
     else:
         conv.en_resume = resume_data
+        print(f"[DEBUG save_session_resume] 已保存到 en_resume")
     db.commit()
+    print(f"[DEBUG save_session_resume] 提交完成")
 
 
 def get_session_jd(db, user_id: int, session_id: str) -> dict:
@@ -422,6 +464,7 @@ def ensure_session_exists(db, user_id: int, session_id: str) -> Conversation:
         conv = Conversation(
             user_id=user_id,
             session_id=session_id,
+            title="新会话",
             messages=[],
             compressed_context=[],
             zh_resume={},
@@ -434,6 +477,113 @@ def ensure_session_exists(db, user_id: int, session_id: str) -> Conversation:
         db.refresh(conv)
 
     return conv
+
+
+def _normalize_session_title(title: str) -> str:
+    """规范化会话标题并做长度校验"""
+    normalized = (title or "").strip()
+    if not normalized:
+        raise ValueError("会话标题不能为空")
+    if len(normalized) > 50:
+        raise ValueError("会话标题不能超过50个字符")
+    return normalized
+
+
+def _extract_summary_text(text: str) -> str:
+    """提取用于默认会话命名的摘要文本"""
+    content = (text or "").strip()
+    if not content or content.startswith("[CONFIRM_REPLY:"):
+        return ""
+    return content[:20]
+
+
+def _session_to_dict(conv: Conversation) -> dict:
+    """统一会话列表返回结构"""
+    return {
+        "session_id": conv.session_id,
+        "title": conv.title or "新会话",
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "last_accessed": conv.last_accessed.isoformat() if conv.last_accessed else None,
+        "message_count": len(conv.messages) if isinstance(conv.messages, list) else 0,
+        "has_pending_confirmation": bool(conv.pending_confirmation)
+    }
+
+
+def list_user_sessions(db, user_id: int) -> list:
+    """获取用户会话列表，按最近访问时间倒序"""
+    sessions = db.query(Conversation).filter(
+        Conversation.user_id == user_id
+    ).order_by(Conversation.last_accessed.desc(), Conversation.created_at.desc()).all()
+    return [_session_to_dict(conv) for conv in sessions]
+
+
+def create_session(db, user_id: int, title: str = "新会话", session_id: str = None) -> dict:
+    """创建会话并返回会话信息"""
+    normalized_title = _normalize_session_title(title)
+    new_session_id = session_id or str(uuid.uuid4())
+    conv = Conversation(
+        user_id=user_id,
+        session_id=new_session_id,
+        title=normalized_title,
+        messages=[],
+        compressed_context=[],
+        zh_resume={},
+        en_resume={},
+        jd_data={},
+        photo=""
+    )
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return _session_to_dict(conv)
+
+
+def rename_session(db, user_id: int, session_id: str, title: str) -> dict:
+    """重命名会话"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        return None
+
+    conv.title = _normalize_session_title(title)
+    db.commit()
+    db.refresh(conv)
+    return _session_to_dict(conv)
+
+
+def delete_session(db, user_id: int, session_id: str) -> bool:
+    """硬删除会话"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        return False
+    db.delete(conv)
+    db.commit()
+    return True
+
+
+def update_session_title_if_default(db, user_id: int, session_id: str, first_user_text: str):
+    """仅默认标题时，根据首条用户输入自动命名"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if not conv:
+        return
+
+    if (conv.title or "").strip() != "新会话":
+        return
+
+    summary = _extract_summary_text(first_user_text)
+    if not summary:
+        return
+
+    conv.title = summary
+    db.commit()
 
 
 def get_session_photo(db, user_id: int, session_id: str) -> str:
@@ -456,3 +606,14 @@ def save_session_photo(db, user_id: int, session_id: str, photo: str):
         db.commit()
 
     return conv
+
+
+def update_session_last_accessed(db, user_id: int, session_id: str):
+    """更新会话的最后访问时间"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if conv:
+        conv.last_accessed = datetime.utcnow()
+        db.commit()

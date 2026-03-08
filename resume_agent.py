@@ -456,7 +456,6 @@ RESUME_FULL_EXTRACT_PROMPT = '''# Role
 # LangChain Tools
 # =============================================================================
 
-@tool
 def fix_unquoted_json_strings(content: str) -> str:
     """
     修复JSON中未转义的双引号问题。
@@ -464,8 +463,6 @@ def fix_unquoted_json_strings(content: str) -> str:
     LLM在生成JSON时，可能会在字符串值内部使用双引号（如 "Pre-download"），
     但忘记转义成 \"。这个函数尝试检测并修复这种情况。
     """
-    import re
-
     # 尝试直接解析
     try:
         json.loads(content)
@@ -473,42 +470,52 @@ def fix_unquoted_json_strings(content: str) -> str:
     except json.JSONDecodeError:
         pass
 
-    # 修复策略：使用更智能的方式处理
-    # 遍历JSON，逐字符处理，跟踪是否在字符串内部
+    # 修复策略：在字符串内部遇到“非边界引号”时自动转义。
+    # 边界引号：后续第一个非空白字符是 :, ,, }, ] 或已到末尾。
     result = []
-    i = 0
     n = len(content)
+    i = 0
+    in_string = False
+    escaped = False
 
     while i < n:
         char = content[i]
 
-        # 检查是否是转义序列的一部分
-        if char == '\\' and i + 1 < n:
-            # 这是一个转义字符，保留它和下一个字符
+        if escaped:
             result.append(char)
-            result.append(content[i + 1])
-            i += 2
+            escaped = False
+            i += 1
+            continue
+
+        if char == '\\':
+            result.append(char)
+            escaped = True
+            i += 1
             continue
 
         if char == '"':
-            # 找到引号，需要判断是字符串开始/结束，还是字符串内部的引号
-            # 从当前位置向前查找，确定是否在字符串内部
-            # 简化处理：如果前面有奇数个未转义的反斜杠，则是在字符串内部
-            backslash_count = 0
-            j = len(result) - 1
-            while j >= 0 and result[j] == '\\':
-                backslash_count += 1
-                j -= 1
-
-            if backslash_count % 2 == 1:
-                # 在字符串内部的引号，需要转义
-                result.append('\\"')
-            else:
-                # 字符串边界，保留原样
+            if not in_string:
+                in_string = True
                 result.append(char)
-        else:
-            result.append(char)
+                i += 1
+                continue
 
+            # in_string=True 时判断当前引号是“结束引号”还是“字符串内部裸引号”
+            j = i + 1
+            while j < n and content[j] in (' ', '\t', '\r', '\n'):
+                j += 1
+
+            next_char = content[j] if j < n else ''
+            if next_char in (':', ',', '}', ']') or j >= n:
+                in_string = False
+                result.append(char)
+            else:
+                # 字符串内部裸引号，转义
+                result.append('\\"')
+            i += 1
+            continue
+
+        result.append(char)
         i += 1
 
     fixed = ''.join(result)
@@ -909,6 +916,7 @@ async def tool_node(state: AgentState) -> dict:
                     # 执行保存
                     print("[Tool] 用户确认，执行保存")
                     try:
+                        updated_resume_data = None
                         # 直接从 pending_confirmation 获取修改后的数据并保存
                         tool_args = state.pending_confirmation.get("tool_args", {})
                         content = tool_args.get("content", "")
@@ -930,30 +938,17 @@ async def tool_node(state: AgentState) -> dict:
                                     print(f"[Tool] 修复后仍然失败: {e2}")
                                     result = f"保存失败：JSON 解析错误 - {str(e)}"
                                     saved_resume = False
-                                    # 仍然需要设置 result 变量并返回，但这里已经返回了
-                                    # 直接跳到后面清除 pending_confirmation
-                                    pending_confirmation = None
-                                    return {
-                                        "messages": state.messages + [ToolMessage(content=result)],
-                                        "resume_data": state.resume_data,
-                                        "jd_data": state.jd_data,
-                                        "pending_confirmation": pending_confirmation,
-                                        "just_saved": False,
-                                        "user_id": state.user_id,
-                                        "lang": state.lang,
-                                        "session_id": state.session_id
-                                    }
-
-                            # 直接调用 update_resume 保存
-                            from tools import update_resume
-                            result = update_resume(
-                                updated_resume_data,
-                                user_id=state.user_id,
-                                session_id=state.session_id,
-                                lang=state.lang
-                            )
-                            saved_resume = True
-                            print(f"[Tool] 保存结果: {result}")
+                            # JSON 解析成功才执行保存
+                            if updated_resume_data is not None:
+                                import tools
+                                result = tools.update_resume(
+                                    updated_resume_data,
+                                    user_id=state.user_id,
+                                    session_id=state.session_id,
+                                    lang=state.lang
+                                )
+                                saved_resume = True
+                                print(f"[Tool] 保存结果: {result}")
                     except json.JSONDecodeError as e:
                         result = f"保存失败：JSON 解析错误 - {str(e)}"
                         saved_resume = False

@@ -31,6 +31,18 @@ const props = defineProps({
     type: String,
     required: false,
     default: 'zh'
+  },
+  // 父组件控制：AI回复中时禁用语言切换
+  isLanguageSwitchDisabled: {
+    type: Boolean,
+    required: false,
+    default: false
+  },
+  // 父组件控制：AI回复中时禁用编辑/JD/导出等操作
+  isOperationLocked: {
+    type: Boolean,
+    required: false,
+    default: false
   }
 })
 
@@ -447,7 +459,7 @@ const showSuccessDialog = ref(false)
 const isExportingPDF = ref(false)
 
 const exportPDF = async () => {
-  if (!props.data) return
+  if (!props.data || props.isOperationLocked) return
 
   isExportingPDF.value = true
   try {
@@ -572,12 +584,6 @@ const getItemIndex = (type, dataIndex) => {
     <!-- 工具栏 - 始终显示 -->
     <div class="resume-toolbar-wrapper">
       <div class="resume-toolbar">
-        <div class="toolbar-icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-          </svg>
-        </div>
-        
         <!-- 移动端：可展开的样式调整面板 -->
         <template v-if="isMobile">
           <div class="mobile-toolbar-row">
@@ -590,14 +596,14 @@ const getItemIndex = (type, dataIndex) => {
             </button>
             
             <!-- 移动端操作按钮 - 始终显示 -->
-            <button class="mobile-jd-btn" @click="emit('open-resume-edit')">
+            <button class="mobile-jd-btn" @click="emit('open-resume-edit')" :disabled="isOperationLocked">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
               <span>编辑简历</span>
             </button>
-            <button class="mobile-jd-btn" @click="emit('open-jd-dialog')">
+            <button class="mobile-jd-btn" @click="emit('open-jd-dialog')" :disabled="isOperationLocked">
               <span v-if="!jdData" class="red-dot"></span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -607,7 +613,7 @@ const getItemIndex = (type, dataIndex) => {
               </svg>
               <span>目标岗位</span>
             </button>
-            <button class="mobile-export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
+            <button class="mobile-export-btn" @click="exportPDF" :disabled="isExportingPDF || !data || isOperationLocked">
               <span v-if="isExportingPDF" class="spinner"></span>
               <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
             </button>
@@ -692,13 +698,20 @@ const getItemIndex = (type, dataIndex) => {
           </div>
           <div class="toolbar-section toolbar-actions">
             <!-- 语言切换 -->
-            <div class="lang-toggle">
-              <span :class="{ active: lang === 'zh' }" @click="emit('toggle-lang', 'zh')">中</span>
-              <span :class="{ active: lang === 'en' }" @click="emit('toggle-lang', 'en')">EN</span>
+            <div class="lang-toggle" :class="{ disabled: isLanguageSwitchDisabled }">
+              <span
+                :class="{ active: lang === 'zh' }"
+                @click="!isLanguageSwitchDisabled && emit('toggle-lang', 'zh')"
+              >中</span>
+              <span
+                :class="{ active: lang === 'en' }"
+                @click="!isLanguageSwitchDisabled && emit('toggle-lang', 'en')"
+              >EN</span>
             </div>
             <button
               class="jd-upload-btn"
               @click="emit('open-resume-edit')"
+              :disabled="isOperationLocked"
               title="编辑简历"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -710,6 +723,7 @@ const getItemIndex = (type, dataIndex) => {
             <button
               class="jd-upload-btn"
               @click="emit('open-jd-dialog')"
+              :disabled="isOperationLocked"
               title="上传目标岗位信息"
             >
               <span v-if="!jdData" class="red-dot"></span>
@@ -722,7 +736,7 @@ const getItemIndex = (type, dataIndex) => {
               </svg>
               <span>目标岗位</span>
             </button>
-            <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
+            <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data || isOperationLocked">
               <span v-if="isExportingPDF" class="spinner"></span>
               <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
             </button>
@@ -1370,6 +1384,13 @@ const getItemIndex = (type, dataIndex) => {
 }
 .lang-toggle span:not(.active):hover {
   background: #f0f0f0;
+}
+.lang-toggle.disabled {
+  opacity: 0.5;
+}
+.lang-toggle.disabled span {
+  cursor: not-allowed;
+  pointer-events: none;
 }
 /* JD上传按钮 */
 .jd-upload-btn {

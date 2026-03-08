@@ -42,7 +42,9 @@ from database import (
     check_invite_code, use_invite_code, create_invite_code,
     get_parsing_status, set_parsing_status,
     get_session_resume, save_session_resume, get_session_jd, save_session_jd,
-    ensure_session_exists, Conversation, get_session_photo, save_session_photo
+    ensure_session_exists, Conversation, get_session_photo, save_session_photo,
+    list_user_sessions, create_session, rename_session, delete_session,
+    update_session_title_if_default
 )
 from auth import (
     verify_password, get_password_hash, create_access_token,
@@ -57,51 +59,14 @@ _pdf_generator = None
 # =============================================================================
 
 def migrate_resume_if_needed(db, user_id: int, session_id: str):
-    """懒加载迁移：如果session没有简历，从用户级别Resume表复制
+    """确保会话存在（不做用户级数据自动迁移）
 
     Args:
         db: 数据库会话
         user_id: 用户ID
         session_id: 会话ID
     """
-    # 确保会话存在
-    conv = ensure_session_exists(db, user_id, session_id)
-
-    # 如果zh_resume为空，从用户级Resume表复制
-    if not conv.zh_resume or conv.zh_resume == {}:
-        old_resume = get_user_resume(db, user_id)
-        if old_resume and old_resume != {}:
-            # 迁移时保留用户级简历的所有字段
-            conv.zh_resume = old_resume
-
-            # 从Resume表获取证件照，保存到conversation.photo（两个语言共用）
-            from database import Resume
-            resume_db = db.query(Resume).filter(Resume.user_id == user_id).first()
-            if resume_db and resume_db.photo:
-                # 保存到conversation.photo字段
-                conv.photo = resume_db.photo
-
-            db.commit()
-            print(f"[Migrate] 从用户级简历迁移到session级: session_id={session_id}")
-
-    # 如果photo为空，也尝试从Resume表迁移
-    if not conv.photo:
-        from database import Resume
-        resume_db = db.query(Resume).filter(Resume.user_id == user_id).first()
-        if resume_db and resume_db.photo:
-            conv.photo = resume_db.photo
-            db.commit()
-            print(f"[Migrate] 迁移photo到conversation表: session_id={session_id}")
-
-    # 如果jd_data为空，从用户级JD表复制
-    if not conv.jd_data or conv.jd_data == {}:
-        old_jd = get_user_jd(db, user_id)
-        if old_jd and old_jd != {}:
-            conv.jd_data = old_jd
-            db.commit()
-            print(f"[Migrate] 从用户级JD迁移到session级: session_id={session_id}")
-
-    return conv
+    return ensure_session_exists(db, user_id, session_id)
 
 
 def migrate_database_columns():
@@ -115,7 +80,9 @@ def migrate_database_columns():
             ("zh_resume", "JSON DEFAULT '{}'"),
             ("en_resume", "JSON DEFAULT '{}'"),
             ("jd_data", "JSON DEFAULT '{}'"),
-            ("photo", "TEXT DEFAULT ''")
+            ("photo", "TEXT DEFAULT ''"),
+            ("title", "VARCHAR(50) DEFAULT '新会话'"),
+            ("migrated_from_old", "BOOLEAN DEFAULT 0")
         ]
 
         for column_name, column_def in columns_to_add:
@@ -131,6 +98,14 @@ def migrate_database_columns():
                 else:
                     # 其他错误可能是由于SQLite版本或其他原因，记录但不中断
                     print(f"[Migration] 添加列 {column_name} 跳过: {e}")
+
+        # 回填历史会话标题
+        try:
+            db.execute(text("UPDATE conversations SET title = '新会话' WHERE title IS NULL OR TRIM(title) = ''"))
+            db.commit()
+            print("[Migration] 会话标题回填完成")
+        except Exception as e:
+            print(f"[Migration] 会话标题回填跳过: {e}")
     finally:
         db.close()
 
@@ -229,6 +204,11 @@ class UserResponse(BaseModel):
 class SaveResumeRequest(BaseModel):
     """保存简历请求"""
     resume_data: dict
+
+
+class RenameSessionRequest(BaseModel):
+    """重命名会话请求"""
+    title: str
 
 
 # =============================================================================
@@ -433,10 +413,30 @@ async def list_invites(current_user = Depends(get_current_user), db: Session = D
     """
     获取邀请码列表（需要登录）
     """
-    from database import InviteCode
+    from database import InviteCode, User
     codes = db.query(InviteCode).order_by(InviteCode.created_at.desc()).all()
+    users = db.query(User.invite_code, User.email, User.created_at).all()
+    invite_usage_map = {}
+    for invite_code, email, created_at in users:
+        if not invite_code:
+            continue
+        existing = invite_usage_map.get(invite_code)
+        # 正常情况下邀请码只使用一次；若异常重复，保留最早注册时间
+        if existing is None or (created_at and existing["used_at"] and created_at < existing["used_at"]):
+            invite_usage_map[invite_code] = {
+                "used_by": email,
+                "used_at": created_at
+            }
+
     return [
-        {"code": c.code, "is_used": c.is_used, "created_at": c.created_at.isoformat()}
+        {
+            "code": c.code,
+            "is_used": c.is_used,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "used_by": invite_usage_map.get(c.code, {}).get("used_by"),
+            "used_at": invite_usage_map.get(c.code, {}).get("used_at").isoformat()
+            if invite_usage_map.get(c.code, {}).get("used_at") else None
+        }
         for c in codes
     ]
 
@@ -463,6 +463,74 @@ async def create_invite(request: Request, current_user = Depends(get_current_use
         codes.append({"code": code, "is_used": False, "created_at": None})
 
     return codes if count > 1 else {"code": codes[0]["code"]}
+
+
+@app.get("/auth/user-growth")
+async def user_growth(
+    days: int = 30,
+    start_date: str = "",
+    end_date: str = "",
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    获取最近 N 天每日新注册用户数（用于 admin 图表）
+    """
+    from datetime import timedelta
+    from sqlalchemy import func
+    from database import User
+
+    parsed_start = None
+    parsed_end = None
+    if start_date:
+        try:
+            parsed_start = datetime.fromisoformat(start_date).date()
+        except Exception:
+            parsed_start = None
+    if end_date:
+        try:
+            parsed_end = datetime.fromisoformat(end_date).date()
+        except Exception:
+            parsed_end = None
+
+    # 优先使用日期范围；否则回退到最近 N 天
+    if parsed_start and parsed_end:
+        if parsed_start > parsed_end:
+            parsed_start, parsed_end = parsed_end, parsed_start
+        # 限制最大查询跨度，防止超大范围
+        if (parsed_end - parsed_start).days > 365:
+            parsed_start = parsed_end - timedelta(days=365)
+        query_start = parsed_start
+        query_end = parsed_end
+    else:
+        days = max(1, min(days, 365))
+        query_end = datetime.utcnow().date()
+        query_start = query_end - timedelta(days=days - 1)
+
+    rows = (
+        db.query(func.date(User.created_at).label("d"), func.count(User.id).label("cnt"))
+        .filter(User.created_at >= datetime.combine(query_start, datetime.min.time()))
+        .filter(User.created_at <= datetime.combine(query_end, datetime.max.time()))
+        .group_by(func.date(User.created_at))
+        .all()
+    )
+
+    count_map = {str(r.d): int(r.cnt) for r in rows}
+    points = []
+    total_days = (query_end - query_start).days + 1
+    for i in range(total_days):
+        day = query_start + timedelta(days=i)
+        day_str = day.isoformat()
+        points.append({"date": day_str, "count": count_map.get(day_str, 0)})
+
+    total_new_users = sum(p["count"] for p in points)
+    return {
+        "days": total_days,
+        "start_date": query_start.isoformat(),
+        "end_date": query_end.isoformat(),
+        "total_new_users": total_new_users,
+        "points": points
+    }
 
 
 # =============================================================================
@@ -576,9 +644,6 @@ async def save_resume_endpoint(request: Request, db: Session = Depends(get_db), 
         if photo:
             save_session_photo(db, current_user.id, session_id, photo)
 
-        # 同时保存到用户级Resume表（保持向前兼容）
-        save_user_resume(db, current_user.id, resume_data)
-
         return JSONResponse(content={"success": True})
     except Exception as e:
         import traceback
@@ -634,9 +699,6 @@ async def save_jd_endpoint(request: Request, db: Session = Depends(get_db), curr
 
         # 保存到session级别
         save_session_jd(db, current_user.id, session_id, jd_data)
-
-        # 同时保存到用户级（保持向前兼容）
-        save_user_jd(db, current_user.id, jd_data, company, position)
 
         return JSONResponse(content={"success": True})
     except Exception as e:
@@ -703,6 +765,80 @@ async def load_conversation_endpoint(request: Request, db: Session = Depends(get
         messages = get_conversation(db, current_user.id, session_id)
 
         return JSONResponse(content=messages)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get("/sessions")
+async def list_sessions_endpoint(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+    """获取当前用户会话列表"""
+    try:
+        sessions = list_user_sessions(db, current_user.id)
+        return JSONResponse(content=sessions)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/sessions")
+async def create_session_endpoint(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """创建新会话"""
+    try:
+        try:
+            request_data = await request.json()
+        except Exception:
+            request_data = {}
+        title = request_data.get("title", "新会话")
+        session_data = create_session(db, current_user.id, title=title)
+        return JSONResponse(content=session_data)
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.patch("/sessions/{session_id}")
+async def rename_session_endpoint(
+    session_id: str,
+    request: RenameSessionRequest,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """重命名会话"""
+    try:
+        renamed = rename_session(db, current_user.id, session_id, request.title)
+        if not renamed:
+            return JSONResponse(content={"error": "会话不存在"}, status_code=404)
+        return JSONResponse(content=renamed)
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session_endpoint(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """删除会话"""
+    try:
+        deleted = delete_session(db, current_user.id, session_id)
+        if not deleted:
+            return JSONResponse(content={"error": "会话不存在"}, status_code=404)
+        return JSONResponse(content={"success": True, "session_id": session_id})
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -826,9 +962,23 @@ async def parse_and_save_resume_endpoint(
             set_parsing_status(db, current_user.id, "failed")
             return JSONResponse(content={"success": False, "error": "解析失败", "raw": content}, status_code=500)
 
-        # 保存到数据库
-        from database import save_user_resume
-        save_user_resume(db, current_user.id, resume_data)
+        # 保存到数据库（保存到 conversations 表，而不是旧的 resumes 表）
+        from database import save_session_resume, create_session, list_user_sessions
+        import uuid
+        
+        # 获取或创建会话
+        sessions = list_user_sessions(db, current_user.id)
+        if sessions:
+            # 使用最近的会话
+            session_id = sessions[0]['session_id']
+        else:
+            # 创建新会话
+            new_session = create_session(db, current_user.id, title="新会话", session_id=str(uuid.uuid4()))
+            session_id = new_session['session_id']
+        
+        # 保存到会话的 zh_resume 中
+        save_session_resume(db, current_user.id, session_id, resume_data, lang='zh')
+        
         # 设置解析状态为完成
         set_parsing_status(db, current_user.id, "completed")
 
@@ -913,6 +1063,10 @@ async def chat_endpoint(
         if not session_id:
             session_id = generate_session_id()
 
+        # 更新会话的最后访问时间
+        from database import update_session_last_accessed
+        update_session_last_accessed(db, current_user.id, session_id)
+
         # 构建 graph 配置（用于状态追踪）
         config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
 
@@ -922,6 +1076,13 @@ async def chat_endpoint(
         print(f"[DEBUG] session_id: {session_id}, lang: {lang}")
         print(f"[DEBUG] is_confirm_click: {is_confirm_click}")
         print(f"[DEBUG] message.strip(): {message.strip()[:100]}...")
+
+        # 若是默认标题会话，收到首条用户有效文本后自动命名
+        if message.strip() and not is_confirm_click:
+            try:
+                update_session_title_if_default(db, current_user.id, session_id, message.strip())
+            except Exception as title_error:
+                print(f"[Warning] 自动命名会话失败: {title_error}")
 
         # 构建消息内容
         message_content = []
@@ -1062,12 +1223,6 @@ async def chat_endpoint(
                 final_jd_data = initial_jd_data if initial_jd_data else {}
 
                 print(f"[SaveState] 待保存: {len(all_human)} HumanMessage, {len(all_ai)} AIMessage, pending_confirmation={pending_confirmation is not None}")
-
-                # 保存到数据库
-                if final_resume_data:
-                    save_user_resume(db, user_id, final_resume_data)
-                if final_jd_data:
-                    save_user_jd(db, user_id, final_jd_data)
 
                 # 保存上下文（带压缩逻辑）
                 from database import save_conversation_context
@@ -1341,8 +1496,8 @@ async def confirm_endpoint(
                 return JSONResponse(content={"error": f"简历数据格式错误: {str(e)}"}, status_code=400)
 
             # 保存修改后的简历数据
-            from tools import update_resume
-            result = update_resume(updated_resume_data, user_id=current_user.id)
+            import tools
+            result = tools.update_resume(updated_resume_data, user_id=current_user.id)
             print(f"[Confirm] 保存结果: {result}")
 
             # 清除 pending_confirmation 状态

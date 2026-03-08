@@ -17,30 +17,44 @@ const currentLang = ref('zh')
 const showTranslateConfirm = ref(false)
 const pendingLang = ref('zh')  // 切换语言时的目标语言
 
+function resetLangToZhDefault() {
+  currentLang.value = 'zh'
+  pendingLang.value = 'zh'
+}
+
 // 检测是否为移动端视图
 function checkMobileView() {
   isMobileView.value = window.innerWidth < 1200
 }
 
 // Tooltip 状态管理
-const tooltipState = ref({ visible: false, text: '', x: 0, bottom: 0 })
+const tooltipState = ref({ visible: false, text: '', x: 0, top: 0 })
+let tooltipTimeout = null
 
 function showTooltip(event, text) {
-  const button = event.currentTarget
-  const rect = button.getBoundingClientRect()
-  const viewportHeight = window.innerHeight
+  clearTimeout(tooltipTimeout)
   
-  // 计算 tooltip 应该显示在按钮上方
-  // 使用 bottom 属性：从视口底部向上计算
-  tooltipState.value = {
-    visible: true,
-    text: text,
-    x: rect.left + rect.width / 2,
-    bottom: viewportHeight - rect.top
+  let rect = null
+  
+  if (event && event.currentTarget) {
+    const button = event.currentTarget
+    rect = button.getBoundingClientRect()
   }
+  
+  tooltipTimeout = setTimeout(() => {
+    if (!rect) return
+    
+    tooltipState.value = {
+      visible: true,
+      text: text,
+      x: rect.right + 8,
+      top: rect.top + (rect.height / 2)
+    }
+  }, 100)
 }
 
 function hideTooltip() {
+  clearTimeout(tooltipTimeout)
   tooltipState.value.visible = false
 }
 
@@ -54,7 +68,7 @@ async function switchLang(lang) {
   const targetLang = lang
   const sourceLang = targetLang === 'zh' ? 'en' : 'zh'
 
-  console.log(`[switchLang] 切换到${targetLang}, 当前zhResume=${JSON.stringify(zhResume.value)}, enResume=${JSON.stringify(enResume.value)}`)
+  
 
   // 判断简历是否有实际内容（不只是有basics对象）
   const hasRealContent = (resume) => {
@@ -74,17 +88,14 @@ async function switchLang(lang) {
   const targetResumeBeforeSwitch = targetLang === 'zh' ? zhResume.value : enResume.value
   const wasTargetEmpty = !hasRealContent(targetResumeBeforeSwitch)
 
-  console.log(`[switchLang] targetResumeBeforeSwitch=${JSON.stringify(targetResumeBeforeSwitch)}, wasTargetEmpty=${wasTargetEmpty}`)
 
   // 获取源语言简历
   const sourceResume = sourceLang === 'zh' ? zhResume.value : enResume.value
   const isSourceHasContent = hasRealContent(sourceResume)
 
-  console.log(`[switchLang] sourceResume=${JSON.stringify(sourceResume)}, isSourceHasContent=${isSourceHasContent}`)
 
   // 步骤1：如果目标语言简历为空，则复制源语言简历到目标语言并保存
   if (wasTargetEmpty && isSourceHasContent) {
-    console.log(`[switchLang] 步骤1：复制简历`)
     const copiedResume = JSON.parse(JSON.stringify(sourceResume))
     if (targetLang === 'zh') {
       zhResume.value = copiedResume
@@ -93,9 +104,7 @@ async function switchLang(lang) {
     }
     // 保存到数据库
     await saveResumeToBackend(copiedResume, targetLang)
-    console.log(`[switchLang] 从${sourceLang}复制简历到${targetLang}并保存`)
   } else {
-    console.log(`[switchLang] 跳过步骤1: wasTargetEmpty=${wasTargetEmpty}, isSourceHasContent=${isSourceHasContent}`)
   }
 
   // 步骤2：从后端重新加载目标语言的最新简历
@@ -123,7 +132,6 @@ async function switchLang(lang) {
       currentLang.value = targetLang
       resumeData.value = latestResume
 
-      console.log(`[switchLang] 切换到${targetLang === 'zh' ? '中文' : '英文'}，已重新加载简历`)
     }
   } catch (error) {
     console.error('切换语言时加载简历失败:', error)
@@ -131,7 +139,6 @@ async function switchLang(lang) {
 
   // 步骤3：如果目标简历原本为空（现在已复制），弹窗询问是否翻译
   if (wasTargetEmpty && isSourceHasContent) {
-    console.log(`[switchLang] 步骤3：显示翻译弹窗`)
     pendingLang.value = targetLang
     showTranslateConfirm.value = true
   }
@@ -150,7 +157,6 @@ async function saveResumeToBackend(resumeDataToSave, lang) {
         lang: lang
       })
     })
-    console.log(`[switchLang] 已保存${lang === 'zh' ? '中文' : '英文'}简历到数据库`)
   } catch (error) {
     console.error('保存简历失败:', error)
   }
@@ -250,8 +256,32 @@ let loadingTextInterval = null
 // 全屏弹窗状态
 const isFullscreenDialogOpen = ref(false)
 const dialogUserInput = ref('')
-// 会话ID - 用于保存对话历史（固定为 default，确保跨会话持久化）
-const sessionId = ref('default')
+// 会话ID与会话列表
+const sessionId = ref(localStorage.getItem('resumeAssistantSessionId') || '')
+const sessions = ref([])
+const activeSessionId = ref('')
+const isSessionSidebarExpanded = ref(false)
+const editingSessionId = ref('')
+const editingSessionTitle = ref('')
+const activeDropdown = ref(null)  // 当前展开的下拉框对应的 session_id
+const menuSession = ref(null)  // 当前打开菜单的会话
+const showSessionMenu = ref(false)  // 是否显示会话菜单
+const showRenameModal = ref(false)  // 是否显示重命名弹窗
+const showDeleteModal = ref(false)  // 是否显示删除确认弹窗
+const renameSessionTitle = ref('')  // 重命名输入框的值
+const menuPosition = ref({ top: '0px', left: '0px' })  // 菜单位置
+const isSessionBusy = ref(false)
+const isSessionSwitchLocked = computed(() => {
+  return isLoading.value || isResponding.value || hasConfirmArea.value || isLoadingInitialData.value || isSessionBusy.value
+})
+
+function guardWhileResponding(actionName = '该操作') {
+  if (isResponding.value) {
+    alert(`AI 还在回复中，请等待本轮回复完成后再进行${actionName}。`)
+    return true
+  }
+  return false
+}
 
 // 图片预览状态
 const showImagePreview = ref(false)
@@ -360,6 +390,373 @@ function getAuthHeaders() {
   return headers
 }
 
+function setCurrentSession(id) {
+  const normalized = id || ''
+  sessionId.value = normalized
+  activeSessionId.value = normalized
+  if (normalized) {
+    localStorage.setItem('resumeAssistantSessionId', normalized)
+  } else {
+    localStorage.removeItem('resumeAssistantSessionId')
+  }
+}
+
+function getSessionLockedHint() {
+  return '助手正在回复或等待确认，暂时不能切换会话'
+}
+
+function clearSessionTransientState() {
+  uploadedFiles.value = []
+  userInput.value = ''
+  dialogUserInput.value = ''
+  showStartDialog.value = false
+  if (loadingTextInterval) {
+    clearTimeout(loadingTextInterval)
+    loadingTextInterval = null
+  }
+}
+
+async function loadSessions() {
+  if (!isLoggedIn.value) return []
+  try {
+    const response = await fetch('/sessions', {
+      method: 'GET',
+      headers: getAuthHeaders()
+    })
+    if (response.status === 401) {
+      logout()
+      return []
+    }
+    if (!response.ok) {
+      throw new Error(`加载会话失败: ${response.status}`)
+    }
+    const data = await response.json()
+    sessions.value = Array.isArray(data) ? data : []
+    return sessions.value
+  } catch (error) {
+    console.error('加载会话列表失败:', error)
+    sessions.value = []
+    return []
+  }
+}
+
+async function createSession(title = '新会话') {
+  const response = await fetch('/sessions', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ title })
+  })
+  if (response.status === 401) {
+    logout()
+    return null
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error || `创建会话失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+function startRenameSession(session) {
+  if (!session || isSessionSwitchLocked.value) return
+  editingSessionId.value = session.session_id
+  editingSessionTitle.value = session.title || ''
+  nextTick(() => {
+    const target = document.querySelector('.session-rename-input')
+    if (target) target.focus()
+  })
+}
+
+function cancelRenameSession() {
+  editingSessionId.value = ''
+  editingSessionTitle.value = ''
+}
+
+// 打开会话菜单
+function openSessionMenu(session, event) {
+  if (isSessionSwitchLocked.value) {
+    alert(getSessionLockedHint())
+    return
+  }
+  menuSession.value = session
+  // 计算菜单位置
+  const rect = event.currentTarget.getBoundingClientRect()
+  menuPosition.value = {
+    top: `${rect.bottom + 4}px`,
+    left: `${rect.left - 100}px` // 菜单宽度约 140px，向左偏移使其右对齐
+  }
+  showSessionMenu.value = true
+}
+
+// 关闭会话菜单
+function closeSessionMenu() {
+  showSessionMenu.value = false
+  menuSession.value = null
+}
+
+// 打开重命名弹窗
+function openRenameModal() {
+  if (!menuSession.value) return
+  renameSessionTitle.value = menuSession.value.title || ''
+  showSessionMenu.value = false
+  showRenameModal.value = true
+}
+
+// 关闭重命名弹窗
+function closeRenameModal() {
+  showRenameModal.value = false
+  renameSessionTitle.value = ''
+  menuSession.value = null
+}
+
+// 提交重命名
+async function submitRenameModal() {
+  if (!menuSession.value) return
+  const title = renameSessionTitle.value.trim()
+  if (!title) {
+    alert('会话标题不能为空')
+    return
+  }
+  if (title.length > 50) {
+    alert('会话标题不能超过50个字符')
+    return
+  }
+  try {
+    const response = await fetch(`/sessions/${menuSession.value.session_id}`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ title })
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.error || `重命名失败: ${response.status}`)
+    }
+    await loadSessions()
+    closeRenameModal()
+  } catch (error) {
+    console.error('重命名会话失败:', error)
+    alert(error.message || '重命名失败，请稍后重试')
+  }
+}
+
+// 打开删除确认弹窗
+function openDeleteModal() {
+  if (!menuSession.value) return
+  showSessionMenu.value = false
+  showDeleteModal.value = true
+}
+
+// 关闭删除确认弹窗
+function closeDeleteModal() {
+  showDeleteModal.value = false
+  menuSession.value = null
+}
+
+// 确认删除
+async function confirmDeleteSession() {
+  if (!menuSession.value) return
+  isSessionBusy.value = true
+  try {
+    const response = await fetch(`/sessions/${menuSession.value.session_id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    })
+    if (response.status === 401) {
+      logout()
+      return
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.error || `删除失败: ${response.status}`)
+    }
+    sessions.value = sessions.value.filter(s => s.session_id !== menuSession.value.session_id)
+    const removedActive = menuSession.value.session_id === sessionId.value
+    if (removedActive) {
+      if (sessions.value.length > 0) {
+        setCurrentSession(sessions.value[0].session_id)
+        await loadInitialData()
+      } else {
+        const created = await createSession('新会话')
+        await loadSessions()
+        if (created?.session_id) {
+          setCurrentSession(created.session_id)
+          await loadInitialData()
+        }
+      }
+    }
+    closeDeleteModal()
+  } catch (error) {
+    console.error('删除会话失败:', error)
+    alert(error.message || '删除会话失败，请稍后重试')
+  } finally {
+    isSessionBusy.value = false
+  }
+}
+
+async function switchSession(targetSessionId) {
+  if (!targetSessionId || targetSessionId === sessionId.value) {
+    return
+  }
+  if (isSessionSwitchLocked.value) {
+    alert(getSessionLockedHint())
+    return
+  }
+  isSessionBusy.value = true
+  try {
+    cancelRenameSession()
+    clearSessionTransientState()
+    setCurrentSession(targetSessionId)
+    
+    // 清除当前会话的本地数据
+    messages.value = []
+    resumeData.value = {}
+    zhResume.value = {}
+    enResume.value = {}
+    jdData.value = {}
+    
+    // 加载新会话的数据（不调用 loadSessions 避免重新排序）
+    await loadSessionData(targetSessionId)
+  } finally {
+    isSessionBusy.value = false
+  }
+}
+
+// 加载会话数据
+async function loadSessionData(sessionIdToLoad) {
+  if (!sessionIdToLoad) return
+  
+  try {
+    // 会话切换时默认回到中文简历视图
+    resetLangToZhDefault()
+
+    const zhResponse = await fetch('/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ session_id: sessionIdToLoad, lang: 'zh' })
+    })
+    const enResponse = await fetch('/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ session_id: sessionIdToLoad, lang: 'en' })
+    })
+
+    if (zhResponse.status === 401 || enResponse.status === 401) {
+      logout()
+      return
+    }
+
+    const zhData = await zhResponse.json()
+    const enData = await enResponse.json()
+    
+    // 设置简历数据（使用整个响应对象，与 loadInitialData 保持一致）
+    zhResume.value = zhData
+    enResume.value = enData
+    resumeData.value = zhData
+    
+
+    const [messagesRes, jdRes] = await Promise.all([
+      fetch('/load_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionIdToLoad })
+      }),
+      fetch('/load_jd', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionIdToLoad })
+      })
+    ])
+
+    if (messagesRes.ok) {
+      const messagesData = await messagesRes.json()
+      // 后端直接返回数组，不是 { messages: [...] } 格式
+      messages.value = Array.isArray(messagesData) ? messagesData : (messagesData.messages || [])
+    }
+
+    if (jdRes.ok) {
+      const jdResData = await jdRes.json()
+      jdData.value = jdResData.jd_data || {}
+    }
+
+    scrollToBottom()
+  } catch (error) {
+    console.error('加载会话数据失败:', error)
+  }
+}
+
+async function createSessionAndSwitch() {
+  if (isSessionSwitchLocked.value) {
+    alert(getSessionLockedHint())
+    return
+  }
+  isSessionBusy.value = true
+  try {
+    // 从后端获取当前会话的中文简历（确保获取的是中文，不是当前显示的语言）
+    let currentZhResume = null
+    try {
+      const zhRes = await fetch('/load_resume', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionId.value || 'default', lang: 'zh' })
+      })
+      if (zhRes.ok) {
+        currentZhResume = await zhRes.json()
+        console.log('[createSession] 获取到的简历:', currentZhResume)
+        console.log('[createSession] 简历语言检测 - basics:', currentZhResume?.basics)
+      }
+    } catch (e) {
+      console.error('[createSession] 获取简历失败:', e)
+    }
+    
+    const created = await createSession('新会话')
+    if (!created?.session_id) return
+    
+    // 如果有中文简历，复制到新会话
+    console.log('[createSession] 准备复制简历到新会话:', created.session_id)
+    console.log('[createSession] 简历数据:', currentZhResume)
+    if (currentZhResume && Object.keys(currentZhResume).length > 0) {
+      console.log('[createSession] 正在保存中文简历...')
+      await fetch('/save_resume', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          resume_data: currentZhResume,
+          session_id: created.session_id,
+          lang: 'zh'
+        })
+      })
+    }
+    
+    await loadSessions()
+    setCurrentSession(created.session_id)
+    clearSessionTransientState()
+    
+    // 添加欢迎消息（使用模板字符串确保换行正确显示）
+    const welcomeMessage = {
+      id: 'welcome_' + Date.now(),
+      role: 'assistant',
+      content: `**你好！边聊边改简历，改完还能模拟面试——我来陪你把求职这件事儿打磨好。**\n\n先跟我说说你在投什么方向？如果手头有JD，也可以点右上角「目标岗位」上传，我帮你分析得更准。`
+    }
+    
+    // 保存欢迎消息到后端（只保存欢迎消息，不复制旧会话的聊天记录）
+    await fetch('/save_conversation', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        session_id: created.session_id,
+        messages: [welcomeMessage]
+      })
+    })
+    
+    await loadInitialData()
+  } catch (error) {
+    console.error('创建会话失败:', error)
+    alert(error.message || '创建会话失败，请稍后重试')
+  } finally {
+    isSessionBusy.value = false
+  }
+}
+
 // 检查登录状态
 async function checkLoginStatus() {
   const savedToken = localStorage.getItem('access_token')
@@ -369,18 +766,15 @@ async function checkLoginStatus() {
     token.value = savedToken
     currentUser.value = JSON.parse(savedUser)
     isLoggedIn.value = true
-    console.log('✅ 用户已登录:', currentUser.value?.email)
   } else {
     isLoggedIn.value = false
     currentUser.value = null
-    console.log('❌ 用户未登录')
   }
 }
 
 // 监听 localStorage 变化（用于跨标签页同步登录状态）
 function handleStorageChange(event) {
   if (event.key === 'access_token' || event.key === 'user') {
-    console.log('📦 检测到登录状态变化，重新检查...')
     checkLoginStatus()
   }
 }
@@ -423,9 +817,7 @@ onMounted(() => {
   nextTick(() => {
     if (messagesContainer.value) {
       messagesContainer.value.addEventListener('scroll', handleScroll)
-      console.log('[DEBUG] 滚动监听已添加')
     } else {
-      console.log('[DEBUG] messagesContainer 未找到')
     }
   })
 
@@ -455,10 +847,8 @@ onUnmounted(() => {
 watch(() => route.path, async () => {
   // 切换到首页时，检查登录状态并加载数据
   if (route.path === '/') {
-    console.log('[DEBUG] watch: 路由变化到首页，检查登录状态...')
     await checkLoginStatus()
     if (isLoggedIn.value) {
-      console.log('[DEBUG] watch: 用户已登录，开始加载数据...')
       await loadInitialData()
     }
   }
@@ -475,29 +865,41 @@ watch(() => route.path, async () => {
 async function loadInitialData() {
   // 防止重复调用
   if (isLoadingInitialData.value) {
-    console.log('[DEBUG] loadInitialData: 已在加载中，跳过重复调用')
     return
   }
   isLoadingInitialData.value = true
-  console.log('[DEBUG] loadInitialData: 开始加载...')
 
-  const currentSessionId = sessionId.value || 'default'
-  const currentLangValue = currentLang.value
+  // 页面刷新/首次加载时默认显示中文简历
+  resetLangToZhDefault()
 
   try {
-    // 分别加载中文和英文简历
-    const [zhResponse, enResponse] = await Promise.all([
-      fetch('/load_resume', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: currentSessionId, lang: 'zh' })
-      }),
-      fetch('/load_resume', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: currentSessionId, lang: 'en' })
-      })
-    ])
+    let sessionList = await loadSessions()
+    if (sessionList.length === 0) {
+      const created = await createSession('新会话')
+      if (created?.session_id) {
+        sessionList = await loadSessions()
+      }
+    }
+
+    if (sessionList.length === 0) {
+      throw new Error('未能初始化会话')
+    }
+
+    const currentSessionExists = sessionId.value && sessionList.some(s => s.session_id === sessionId.value)
+    const currentSessionId = currentSessionExists ? sessionId.value : sessionList[0].session_id
+    setCurrentSession(currentSessionId)
+
+    // 分别加载中文和英文简历（顺序加载，确保先加载中文）
+    const zhResponse = await fetch('/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ session_id: currentSessionId, lang: 'zh' })
+    })
+    const enResponse = await fetch('/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ session_id: currentSessionId, lang: 'en' })
+    })
 
     // 如果认证失败，跳转登录
     if (zhResponse.status === 401 || enResponse.status === 401) {
@@ -513,18 +915,14 @@ async function loadInitialData() {
     enResume.value = enData
 
     // 设置当前显示的简历
-    resumeData.value = currentLangValue === 'zh' ? zhData : enData
+    resumeData.value = zhData
 
-    console.log(`[DEBUG] loadInitialData: 中文简历加载完成, keys=${Object.keys(zhData).length}`)
-    console.log(`[DEBUG] loadInitialData: 英文简历加载完成, keys=${Object.keys(enData).length}`)
 
     // 检查解析状态（使用中文简历的状态）
     const parsingStatus = zhData.parsing_status || 'none'
-    console.log(`[DEBUG] loadInitialData: parsingStatus="${parsingStatus}"`)
 
     // 如果正在解析中，显示上传弹窗并启动轮询
     if (parsingStatus === 'parsing') {
-      console.log('📋 检测到简历正在解析中，启动轮询...')
       showUploadDialog.value = true
       hasResumeFileSelected.value = true
       isParsingResume.value = true
@@ -544,7 +942,7 @@ async function loadInitialData() {
       const jdResponse = await fetch('/load_jd', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: sessionId.value || 'default' })
+        body: JSON.stringify({ session_id: currentSessionId })
       })
       if (jdResponse.status === 401) {
         logout()
@@ -555,21 +953,19 @@ async function loadInitialData() {
         jdData.value = jdResult
       }
     } catch (jdError) {
-      console.log('暂无岗位数据')
     }
 
     // 检查是否首次进入（无简历且无聊天记录）
     // 修正判断逻辑：检查basics中是否有有效字段
     const { parsing_status, basics, ...rest } = zhData
     const hasResume = basics && (basics.name || basics.target_position || Object.keys(rest).length > 0)
-    console.log(`[DEBUG] loadInitialData: hasResume=${hasResume}, basics=${JSON.stringify(basics)}`)
 
     // 加载对话历史
     try {
       const convResponse = await fetch('/load_conversation', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: sessionId.value })
+        body: JSON.stringify({ session_id: currentSessionId })
       })
       if (convResponse.status === 401) {
         logout()
@@ -577,11 +973,9 @@ async function loadInitialData() {
       }
       const convData = await convResponse.json()
       const hasChatHistory = Array.isArray(convData) && convData.length > 0
-      console.log(`[DEBUG] loadInitialData: hasChatHistory=${hasChatHistory}`)
 
       // 首次进入检测：无简历且无聊天记录
       if (!hasResume && !hasChatHistory) {
-        console.log('[DEBUG] 首次进入，显示开始选择弹窗')
         showStartDialog.value = true
         return
       }
@@ -607,11 +1001,11 @@ async function loadInitialData() {
     messages.value = [{
       id: Date.now(),
       role: 'assistant',
-      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
+      content: '抱歉，加载简历失败。请稍后重试。'
     }]
   } finally {
+    activeSessionId.value = sessionId.value
     isLoadingInitialData.value = false
-    console.log('[DEBUG] loadInitialData: 完成')
   }
 }
 
@@ -630,11 +1024,9 @@ async function pollParsingStatus() {
 
     const data = await response.json()
     const status = data.parsing_status || 'none'
-    console.log(`[DEBUG] pollParsingStatus: status="${status}"`)
 
     if (status === 'completed') {
       // 解析完成，重新加载简历数据
-      console.log('✅ 解析完成，重新加载数据...')
       stopParsingStatusPoll()
       isParsingResume.value = false
       showUploadDialog.value = false
@@ -644,7 +1036,6 @@ async function pollParsingStatus() {
       // 刷新页面后首次加载时，需要调用 first_message_from_resume 生成首次提问
       // 检查是否已有聊天历史，如果没有则调用
       if (messages.value.length === 0) {
-        console.log('📋 轮询检测到解析完成，调用 first_message_from_resume...')
         isLoading.value = true
         try {
           const firstMsgResponse = await fetch('/api/chat/first_message_from_resume', {
@@ -667,7 +1058,7 @@ async function pollParsingStatus() {
             }]
 
             if (firstMsgData.session_id) {
-              sessionId.value = firstMsgData.session_id
+              setCurrentSession(firstMsgData.session_id)
             }
 
             // 保存对话到数据库
@@ -766,7 +1157,6 @@ async function loadResumeData() {
     // 更新简历内容
     const { parsing_status, ...resumeContent } = data
     if (resumeContent && Object.keys(resumeContent).length > 0) {
-      console.log(`✅ 简历数据已加载 (${currentLang.value})`)
     }
   } catch (error) {
     console.error('加载简历数据失败:', error)
@@ -777,9 +1167,13 @@ async function loadResumeData() {
 function logout() {
   localStorage.removeItem('access_token')
   localStorage.removeItem('user')
+  localStorage.removeItem('resumeAssistantSessionId')
   token.value = ''
   currentUser.value = null
   isLoggedIn.value = false
+  sessions.value = []
+  activeSessionId.value = ''
+  sessionId.value = ''
   // 刷新页面
   window.location.reload()
 }
@@ -932,7 +1326,6 @@ async function sendMessage() {
                   }
                 }
               } else if (data.type === 'final') {
-                console.log('[前端] 收到 final 事件, isLoading before:', isLoading.value, 'isResponding:', isResponding.value)
                 // 停止加载文案切换
                 if (loadingTextInterval) {
                   clearTimeout(loadingTextInterval)
@@ -952,8 +1345,7 @@ async function sendMessage() {
                 isLoading.value = false
                 // 更新会话ID并保存到localStorage
                 if (data.session_id) {
-                  sessionId.value = data.session_id
-                  localStorage.setItem('resumeAssistantSessionId', data.session_id)
+                  setCurrentSession(data.session_id)
                 }
               } else if (data.type === 'tool_call') {
                 // 停止加载文案切换
@@ -993,17 +1385,15 @@ async function sendMessage() {
                 // 标记有 confirm area，禁用输入
                 hasConfirmArea.value = true
               } else if (data.type === 'end') {
-                console.log('[前端] 收到 end 事件, isResponding before:', isResponding.value, 'isLoading:', isLoading.value)
                 // 结束信号，关闭连接
                 isResponding.value = false
-                console.log('[前端] isResponding 已设置为 false')
                 // 只在流式响应结束时调用一次updateResumeData()
                 updateResumeData()
                 // 更新会话ID并保存到localStorage
                 if (data.session_id) {
-                  sessionId.value = data.session_id
-                  localStorage.setItem('resumeAssistantSessionId', data.session_id)
+                  setCurrentSession(data.session_id)
                 }
+                await loadSessions()
                 break
               }
             } catch (e) {
@@ -1046,6 +1436,7 @@ async function sendMessage() {
     } catch (saveError) {
       console.error('保存对话历史失败:', saveError)
     }
+    await loadSessions()
   }
 }
 
@@ -1140,17 +1531,16 @@ async function handleOptionClick({ confirm_id, value }) {
                 messages.value[idx] = { ...messages.value[idx], content: data.content, streaming: false }
               }
               if (data.session_id) {
-                sessionId.value = data.session_id
-                localStorage.setItem('resumeAssistantSessionId', data.session_id)
+                setCurrentSession(data.session_id)
               }
               updateResumeData()
             } else if (data.type === 'end') {
               isResponding.value = false
               updateResumeData()
               if (data.session_id) {
-                sessionId.value = data.session_id
-                localStorage.setItem('resumeAssistantSessionId', data.session_id)
+                setCurrentSession(data.session_id)
               }
+              await loadSessions()
             }
           } catch (e) {
             console.error('解析JSON失败:', e)
@@ -1167,6 +1557,8 @@ async function handleOptionClick({ confirm_id, value }) {
       role: 'assistant',
       content: '处理确认请求失败，请重试。'
     })
+  } finally {
+    await loadSessions()
   }
 }
 
@@ -1329,6 +1721,7 @@ function closeImagePreview() {
 
 // 打开岗位信息弹窗
 function openJDDialog() {
+  if (guardWhileResponding('目标岗位编辑')) return
   isJDDialogOpen.value = true
   // 如果已有岗位信息，直接显示编辑表单
   if (jdData.value && Object.keys(jdData.value).length > 0) {
@@ -1379,6 +1772,7 @@ function closeJDDialog() {
 
 // 打开简历编辑弹窗
 function openResumeEditDialog() {
+  if (guardWhileResponding('简历编辑')) return
   // 深拷贝当前简历数据
   if (resumeData.value && Object.keys(resumeData.value).length > 0) {
     resumeFormData.value = JSON.parse(JSON.stringify(resumeData.value))
@@ -1724,6 +2118,7 @@ function multilineToArray(text) {
 
 // 保存简历
 async function saveResume() {
+  if (guardWhileResponding('简历保存')) return
   isSaving.value = true
   try {
     // 复制数据进行处理
@@ -2087,7 +2482,7 @@ async function confirmIdentitySelection() {
 
       // 保存 session_id 到全局
       if (data.session_id) {
-        sessionId.value = data.session_id
+        setCurrentSession(data.session_id)
       }
 
       // 保存对话到数据库（后端已保存，但确保前端也保存一次）
@@ -2166,7 +2561,7 @@ async function confirmIdentitySelection() {
 
       const saveData = await saveResponse.json()
       if (saveData.session_id) {
-        sessionId.value = saveData.session_id
+        setCurrentSession(saveData.session_id)
       }
     } catch (saveError) {
       console.error('保存消息失败:', saveError)
@@ -2253,6 +2648,7 @@ function handleResumeImageSelect(event) {
 
 // 解析并保存简历
 async function parseAndSaveResume() {
+  if (guardWhileResponding('简历解析')) return
   if (!resumeImageFile.value) {
     alert('请先选择简历图片')
     return
@@ -2325,7 +2721,7 @@ async function parseAndSaveResume() {
 
           // 保存 session_id 到全局
           if (firstMsgData.session_id) {
-            sessionId.value = firstMsgData.session_id
+            setCurrentSession(firstMsgData.session_id)
           }
 
           // 保存对话到数据库
@@ -2398,18 +2794,15 @@ let scrollThrottleTimer = null
 // 检查是否需要显示滑动至底部按钮
 function checkScrollPosition() {
   if (!messagesContainer.value) {
-    console.log('[DEBUG] checkScrollPosition: messagesContainer 为空')
     return
   }
   
   const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
   
-  console.log(`[DEBUG] scrollTop=${scrollTop}, scrollHeight=${scrollHeight}, clientHeight=${clientHeight}, distanceFromBottom=${distanceFromBottom}`)
   
   // 滚动距离底部超过20像素时显示按钮
   showScrollToBottomButton.value = distanceFromBottom > 1500
-  console.log(`[DEBUG] showScrollToBottomButton=${showScrollToBottomButton.value}`)
 }
 
 // 滚动事件节流处理（100ms间隔）
@@ -2693,7 +3086,7 @@ watch(
             </div>
           </div>
           <div class="modal-footer" v-if="resumeImagePreview || isParsingResume">
-            <button @click="parseAndSaveResume" :disabled="isParsingResume" class="btn-primary full-width">
+            <button @click="parseAndSaveResume" :disabled="isParsingResume || isResponding" class="btn-primary full-width">
               {{ isParsingResume ? '解析中...' : '开始解析' }}
             </button>
           </div>
@@ -2742,124 +3135,192 @@ watch(
       <template v-if="!isMobileView">
         <!-- 左侧聊天区 -->
       <div class="chat-section">
-        <div class="chat-container">
-          <div class="messages-container" ref="messagesContainer">
-            <ChatMessage
-              v-for="message in messages"
-              :key="message.id + '_' + (message.content?.length || 0)"
-              :message="message"
-              @optionClick="handleOptionClick"
-            />
-            <!-- 只有当没有过程消息且正在加载时才显示默认加载指示器 -->
-          <div v-if="isLoading" class="loading-indicator">
-            <div class="loading-spinner">
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="32" stroke-dashoffset="10" opacity="0.3"/>
-                <path d="M10 3 A 7 7 0 0 1 10 17 A 7 7 0 0 1 10 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-              </svg>
-            </div>
-            <span class="loading-text">{{ loadingText }}</span>
-          </div>
-          </div>
-          
-          <!-- 滑动至底部按钮 -->
-          <Transition name="fade">
-            <button
-              v-if="showScrollToBottomButton"
-              class="scroll-to-bottom-btn"
-              @click="handleScrollToBottomClick"
-            >
-              <span class="scroll-arrow">↓</span>
-            </button>
-          </Transition>
-        </div>
-        
-        <!-- 悬浮输入容器 -->
-        <div class="floating-input-container">
-          <!-- 文件上传区域 -->
-          <div v-if="uploadedFiles.length > 0" class="uploaded-files">
-            <div v-for="file in uploadedFiles" :key="file.id" class="file-thumbnail">
-              <!-- 图片类型 - 支持点击预览 -->
-              <div
-                v-if="file.type.startsWith('image/')"
-                class="file-icon image-icon"
-                :style="{ cursor: 'pointer' }"
-                @click="openImagePreview(file)"
+          <aside class="session-sidebar" :class="{ collapsed: !isSessionSidebarExpanded }">
+            <div class="session-sidebar-header">
+              <!-- 新建按钮 -->
+              <button
+                class="session-create-btn"
+                @click="createSessionAndSwitch"
+                :disabled="isSessionSwitchLocked"
+                @mouseenter="(e) => showTooltip(e, isSessionSwitchLocked ? getSessionLockedHint() : '新建会话')"
+                @mouseleave="hideTooltip"
               >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 20px !important; height: 20px !important; overflow: visible !important; pointer-events: none;">
+                  <rect x="3" y="3" width="14" height="14" rx="2" stroke="#333" stroke-width="1.2"/>
+                  <path d="M10 7V13M7 10H13" stroke="#333" stroke-width="1.2" stroke-linecap="round"/>
+                </svg>
+              </button>
+              <!-- 展开/收起按钮 -->
+              <button
+                class="session-toggle-btn"
+                @click="isSessionSidebarExpanded = !isSessionSidebarExpanded"
+                @mouseenter="(e) => showTooltip(e, isSessionSidebarExpanded ? '收起侧边栏' : '展开侧边栏')"
+                @mouseleave="hideTooltip"
+              >
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 20px !important; height: 20px !important; overflow: visible !important; pointer-events: none;">
+                  <path fill="#333" d="M16.5 4C17.3284 4 18 4.67157 18 5.5V14.5C18 15.3284 17.3284 16 16.5 16H3.5C2.67157 16 2 15.3284 2 14.5V5.5C2 4.67157 2.67157 4 3.5 4H16.5ZM7 15H16.5C16.7761 15 17 14.7761 17 14.5V5.5C17 5.22386 16.7761 5 16.5 5H7V15ZM3.5 5C3.22386 5 3 5.22386 3 5.5V14.5C3 14.7761 3.22386 15 3.5 15H6V5H3.5Z"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- 仅在展开时显示会话列表 -->
+            <div v-if="isSessionSidebarExpanded" class="session-list">
+            <div
+              v-for="session in sessions"
+              :key="session.session_id"
+              class="session-item"
+              :class="{ active: session.session_id === activeSessionId }"
+            >
+              <button
+                class="session-item-main"
+                @click="switchSession(session.session_id)"
+                :disabled="isSessionSwitchLocked || session.session_id === activeSessionId"
+                :title="isSessionSwitchLocked ? getSessionLockedHint() : (session.title || '新会话')"
+              >
+                <template v-if="isSessionSidebarExpanded">
+                  <span class="session-item-title">{{ session.title || '新会话' }}</span>
+                </template>
+                <template v-else>
+                  <span class="session-item-dot"></span>
+                </template>
+              </button>
+              <div v-if="isSessionSidebarExpanded" class="session-item-actions">
+                <button 
+                  class="session-more-btn" 
+                  type="button"
+                  @click.stop="openSessionMenu(session, $event)"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 16px !important; height: 16px !important; overflow: visible !important;">
+                    <circle cx="8" cy="4" r="1" fill="#555"/>
+                    <circle cx="8" cy="8" r="1" fill="#555"/>
+                    <circle cx="8" cy="12" r="1" fill="#555"/>
+                  </svg>
+                </button>
               </div>
-              <!-- PDF类型 - 不支持点击 -->
-              <div v-else-if="file.type === 'application/pdf'" class="file-icon pdf-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-              </div>
-              <div class="file-name">{{ file.name }}</div>
-              <div @click="deleteFile(file.id)" class="delete-file-btn">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-          </div>
             </div>
           </div>
+        </aside>
+
+        <div class="chat-main">
+          <div class="chat-container">
+            <div class="messages-container" ref="messagesContainer">
+              <ChatMessage
+                v-for="message in messages"
+                :key="message.id + '_' + (message.content?.length || 0)"
+                :message="message"
+                @optionClick="handleOptionClick"
+              />
+              <!-- 只有当没有过程消息且正在加载时才显示默认加载指示器 -->
+            <div v-if="isLoading" class="loading-indicator">
+              <div class="loading-spinner">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="32" stroke-dashoffset="10" opacity="0.3"/>
+                  <path d="M10 3 A 7 7 0 0 1 10 17 A 7 7 0 0 1 10 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <span class="loading-text">{{ loadingText }}</span>
+            </div>
+            </div>
+
+            <!-- 滑动至底部按钮 -->
+            <Transition name="fade">
+              <button
+                v-if="showScrollToBottomButton"
+                class="scroll-to-bottom-btn"
+                @click="handleScrollToBottomClick"
+              >
+                <span class="scroll-arrow">↓</span>
+              </button>
+            </Transition>
+          </div>
           
-          <div class="input-wrapper">
-            <input
-              type="file"
-              ref="fileInput"
-              multiple
-              accept="image/png, image/jpeg, image/jpg, application/pdf"
-              @change="handleFileSelect"
-              style="display: none;"
-            />
-            <div class="textarea-container">
-              <textarea
-                v-model="userInput"
-                @keydown="handleKeyDown"
-                @paste="handlePaste"
-                placeholder="输入你的问题或请求..."
-                rows="1"
-                :disabled="isLoading || isResponding"
-              ></textarea>
-              <!-- 底部工具栏 -->
-              <div class="toolbar">
-                <!-- 上传按钮 -->
-                <button
-                  @click="fileInput?.click()"
-                  class="icon-btn"
-                  :disabled="isLoading || isResponding"
-                  @mouseenter="(e) => showTooltip(e, '上传文件')"
-                  @mouseleave="hideTooltip"
-                  @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
+          <!-- 悬浮输入容器 -->
+          <div class="floating-input-container">
+            <!-- 文件上传区域 -->
+            <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+              <div v-for="file in uploadedFiles" :key="file.id" class="file-thumbnail">
+                <!-- 图片类型 - 支持点击预览 -->
+                <div
+                  v-if="file.type.startsWith('image/')"
+                  class="file-icon image-icon"
+                  :style="{ cursor: 'pointer' }"
+                  @click="openImagePreview(file)"
                 >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg>
-                </button>
-                <!-- 全屏按钮 -->
-                <button
-                  @click="openFullscreenDialog"
-                  class="icon-btn"
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                </div>
+                <!-- PDF类型 - 不支持点击 -->
+                <div v-else-if="file.type === 'application/pdf'" class="file-icon pdf-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                </div>
+                <div class="file-name">{{ file.name }}</div>
+                <div @click="deleteFile(file.id)" class="delete-file-btn">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                </div>
+              </div>
+            </div>
+            
+            <div class="input-wrapper">
+              <input
+                type="file"
+                ref="fileInput"
+                multiple
+                accept="image/png, image/jpeg, image/jpg, application/pdf"
+                @change="handleFileSelect"
+                style="display: none;"
+              />
+              <div class="textarea-container">
+                <textarea
+                  v-model="userInput"
+                  @keydown="handleKeyDown"
+                  @paste="handlePaste"
+                  placeholder="输入你的问题或请求..."
+                  rows="1"
                   :disabled="isLoading || isResponding"
-                  @mouseenter="(e) => showTooltip(e, '全屏输入')"
-                  @mouseleave="hideTooltip"
-                  @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
-                  </svg>
-                </button>
-                <!-- 发送按钮 - 预留空间避免高度突变 -->
-                <div class="send-btn-placeholder" v-if="!(userInput.trim() || uploadedFiles.length > 0)"></div>
-                <button
-                  v-if="userInput.trim() || uploadedFiles.length > 0"
-                  @click="sendMessage"
-                  class="icon-btn send-btn"
-                  :disabled="isLoading || isResponding"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="22" y1="2" x2="11" y2="13"></line>
-                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                  </svg>
-                </button>
+                ></textarea>
+                <!-- 底部工具栏 -->
+                <div class="toolbar">
+                  <!-- 上传按钮 -->
+                  <button
+                    @click="fileInput?.click()"
+                    class="icon-btn"
+                    :disabled="isLoading || isResponding"
+                    @mouseenter="(e) => showTooltip(e, '上传文件')"
+                    @mouseleave="hideTooltip"
+                    @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="17 8 12 3 7 8"></polyline>
+                      <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                  </button>
+                  <!-- 全屏按钮 -->
+                  <button
+                    @click="openFullscreenDialog"
+                    class="icon-btn"
+                    :disabled="isLoading || isResponding"
+                    @mouseenter="(e) => showTooltip(e, '全屏输入')"
+                    @mouseleave="hideTooltip"
+                    @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                    </svg>
+                  </button>
+                  <!-- 发送按钮 - 预留空间避免高度突变 -->
+                  <div class="send-btn-placeholder" v-if="!(userInput.trim() || uploadedFiles.length > 0)"></div>
+                  <button
+                    v-if="userInput.trim() || uploadedFiles.length > 0"
+                    @click="sendMessage"
+                    class="icon-btn send-btn"
+                    :disabled="isLoading || isResponding"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="22" y1="2" x2="11" y2="13"></line>
+                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -2869,7 +3330,7 @@ watch(
       <!-- 右侧简历预览区 -->
       <div class="resume-section">
         <div class="resume-content">
-          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" :is-language-switch-disabled="isLoading || isResponding" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
         </div>
       </div>
       </template>
@@ -2952,7 +3413,7 @@ watch(
 
           <!-- 简历 Tab 内容 -->
           <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" key="resume">
-            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" :is-language-switch-disabled="isLoading || isResponding" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
           </div>
         </Transition>
 
@@ -2983,7 +3444,7 @@ watch(
       <div 
         v-if="tooltipState.visible" 
         class="custom-tooltip"
-        :style="{ left: tooltipState.x + 'px', bottom: tooltipState.bottom + 'px' }"
+        :style="{ left: tooltipState.x + 'px', top: tooltipState.top + 'px' }"
       >
         {{ tooltipState.text }}
       </div>
@@ -3019,6 +3480,87 @@ watch(
             >
               发送 (Ctrl+Enter)
             </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 会话菜单弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showSessionMenu" class="session-menu-overlay" @click.self="closeSessionMenu">
+        <div class="session-menu" :style="menuPosition">
+          <button class="session-menu-item" @click="openRenameModal">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2L14 4L6 12H4V10L12 2Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            </svg>
+            <span>重命名</span>
+          </button>
+          <button class="session-menu-item danger" @click="openDeleteModal">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 4H14M5 4V3C5 2.44772 5.44772 2 6 2H10C10.5523 2 11 2.44772 11 3V4M13 4V13C13 13.5523 12.5523 14 12 14H4C3.44772 14 3 13.5523 3 13V4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>删除</span>
+          </button>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 重命名弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showRenameModal" class="modal-overlay" @click.self="closeRenameModal">
+        <div class="modal-container rename-modal">
+          <div class="modal-header">
+            <h3>重命名会话</h3>
+            <button class="modal-close-btn" @click="closeRenameModal" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <input
+              v-model="renameSessionTitle"
+              type="text"
+              class="modal-input"
+              maxlength="50"
+              placeholder="输入会话名称"
+              @keydown.enter.prevent="submitRenameModal"
+            />
+          </div>
+          <div class="modal-footer">
+            <button class="cancel-btn" @click="closeRenameModal">取消</button>
+            <button class="save-btn" @click="submitRenameModal" :disabled="!renameSessionTitle.trim()">保存</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 删除确认弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showDeleteModal" class="modal-overlay" @click.self="closeDeleteModal">
+        <div class="modal-container delete-modal">
+          <div class="modal-header">
+            <h3>删除会话</h3>
+            <button class="modal-close-btn" @click="closeDeleteModal" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <p class="delete-message">确定要删除会话 "{{ menuSession?.title || '未命名会话' }}" 吗？此操作无法撤销。</p>
+          </div>
+          <div class="modal-footer">
+            <button class="cancel-btn" @click="closeDeleteModal">取消</button>
+            <button class="save-btn" @click="confirmDeleteSession">删除</button>
           </div>
         </div>
       </div>
@@ -3504,7 +4046,7 @@ watch(
 
           <div class="dialog-actions">
             <button class="cancel-btn" @click="closeResumeEditDialog">取消</button>
-            <button class="save-btn" @click="saveResume" :disabled="isSaving">
+            <button class="save-btn" @click="saveResume" :disabled="isSaving || isResponding">
               <span v-if="isSaving" class="spinner"></span>
               <span>{{ isSaving ? '保存中...' : '保存' }}</span>
             </button>
@@ -3541,8 +4083,8 @@ watch(
 
 .header-content {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: flex-start;
   padding: 1rem 2rem;
   width: 100%;
   box-sizing: border-box;
@@ -3553,6 +4095,7 @@ watch(
   margin: 0;
   display: flex;
   align-items: center;
+  margin-right: auto;
 }
 
 .app-header h1 a {
@@ -3649,6 +4192,7 @@ watch(
   letter-spacing: 0.25em;
   color: #303030;
   align-items: center;
+  margin-left: auto;
 }
 
 .user-email {
@@ -3773,9 +4317,8 @@ watch(
 }
 
 .chat-section {
-  flex: 0 0 40%; /* 聊天区域40%宽度，简历区域60% */
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background-color: rgb(254, 253, 251);
   margin: 0;
   padding: 0;
@@ -3783,6 +4326,421 @@ watch(
   position: relative;
   border-right: 1px solid #e0e0e0;
   height: 100%; /* 确保高度填满 */
+  width: 50%; /* 聊天区域占50% */
+  flex-shrink: 0; /* 不允许收缩 */
+}
+
+/* Claude 风格侧边栏 */
+.session-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #faf9f7;
+  border-right: 1px solid #e8e6e3;
+  transition: width 0.2s ease;
+}
+
+.session-sidebar.collapsed {
+  width: 52px;
+}
+
+.session-sidebar.collapsed .session-sidebar-header {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 8px;
+}
+
+.session-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #e8e6e3;
+  min-height: 52px;
+  box-sizing: border-box;
+}
+
+/* 新建按钮 */
+.session-create-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent !important;
+  color: #333 !important;
+  opacity: 1 !important;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  outline: none;
+}
+
+.session-create-btn:hover {
+  color: #333 !important;
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+
+.session-create-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 展开收起按钮 */
+.session-toggle-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  outline: none;
+}
+
+.session-toggle-btn:hover {
+  color: #333 !important;
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* 会话列表 */
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* 会话项 - Claude风格 */
+.session-item {
+  display: flex;
+  align-items: center;
+  position: relative;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.session-item:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.session-item.active {
+  background: rgba(217, 119, 6, 0.15);
+}
+
+.session-item.active .session-item-title {
+  color: #222;
+  font-weight: 500;
+}
+
+.session-item-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  min-width: 0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  outline: none;
+}
+
+.session-item-main:hover:not(:disabled) {
+  background: transparent;
+}
+
+.session-item-main:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.session-item-title {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 400;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.5;
+}
+
+/* 选中项文字颜色保持不变 */
+
+/* 更多按钮 */
+.session-item-actions {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  margin-right: 4px;
+}
+
+.session-item:hover .session-item-actions,
+.session-item.active .session-item-actions {
+  opacity: 1;
+}
+
+.session-more-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #555;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  outline: none;
+}
+
+.session-more-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #333;
+}
+
+.session-item.active .session-more-btn {
+  color: #333;
+}
+
+.session-item.active .session-more-btn:hover {
+  background: transparent;
+}
+
+/* 会话菜单 - Claude风格弹出框 */
+.session-menu-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+}
+
+.session-menu {
+  position: fixed;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: 6px;
+  min-width: 160px;
+  z-index: 1001;
+  animation: menuFadeIn 0.1s ease;
+}
+
+@keyframes menuFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.session-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: #444;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 8px;
+  transition: all 0.1s ease;
+}
+
+.session-menu-item:hover {
+  background: #f5f5f5;
+}
+
+.session-menu-item.danger {
+  color: #dc2626;
+}
+
+.session-menu-item.danger:hover {
+  background: #fef2f2;
+}
+
+/* 模态弹窗 - Claude风格 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(4px);
+}
+
+.modal-container {
+  background: #fff;
+  border-radius: 0;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  width: 100%;
+  max-width: 400px;
+  overflow: hidden;
+  animation: modalSlideIn 0.2s ease;
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 20px 16px;
+  border-bottom: none;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.modal-close-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #999;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.modal-close-btn:hover {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.modal-body {
+  padding: 0 20px 20px;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  background: #fff;
+  color: #1a1a1a;
+  outline: none;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+}
+
+.modal-input:focus {
+  border-color: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.1);
+}
+
+.delete-message {
+  margin: 0;
+  font-size: 14px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 10px;
+  padding: 0 20px 20px;
+  justify-content: flex-end;
+}
+
+.modal-btn {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-btn.cancel {
+  background: #f0f0f0;
+  color: #555;
+}
+
+.modal-btn.cancel:hover {
+  background: #e0e0e0;
+}
+
+.modal-btn.save {
+  background: #1a1a1a;
+  color: #fff;
+}
+
+.modal-btn.save:hover:not(:disabled) {
+  background: #333;
+}
+
+.modal-btn.save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-btn.delete {
+  background: #dc2626;
+  color: #fff;
+}
+
+.modal-btn.delete:hover {
+  background: #b91c1c;
+}
+
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 简洁的滚动条样式 - 应用于所有可滚动区域 */
@@ -4043,7 +5001,7 @@ watch(
 /* 自定义 Tooltip 样式 - 使用 Teleport 渲染到 body */
 .custom-tooltip {
   position: fixed;
-  transform: translateX(-50%);
+  transform: translateY(-50%);
   background-color: #303030;
   color: white;
   padding: 0.375rem 0.625rem;
@@ -4057,7 +5015,7 @@ watch(
 /* Tooltip 淡入淡出动画 */
 .tooltip-fade-enter-active,
 .tooltip-fade-leave-active {
-  transition: opacity 0.15s ease;
+  transition: opacity 0.1s ease;
 }
 
 .tooltip-fade-enter-from,
@@ -4171,7 +5129,8 @@ watch(
 }
 
 .resume-section {
-  flex: 1;
+  flex: 1 1 auto; /* 简历区域自动适应剩余空间 */
+  width: 0; /* 配合 flex: 1 实现自动宽度 */
   max-width: none;
   background-color: rgb(249, 245, 242);
   margin: 0;
