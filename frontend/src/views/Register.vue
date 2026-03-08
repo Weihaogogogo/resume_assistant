@@ -100,9 +100,9 @@ export default {
         localStorage.setItem('access_token', data.access_token)
         localStorage.setItem('user', JSON.stringify(data.user))
 
-        // 2秒后跳转到首页
+        // 2秒后跳转到首页（由路由守卫和 watch 处理后续逻辑）
         setTimeout(() => {
-          this.$router.push('/')
+          this.$router.replace('/')
         }, 2000)
       } catch (err) {
         this.error = err.message

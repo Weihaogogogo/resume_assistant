@@ -4,7 +4,7 @@
       <div class="login-header">
         <h1>登录</h1>
       </div>
-      
+
       <form @submit.prevent="handleLogin" class="login-form">
         <div class="form-group">
           <input
@@ -15,7 +15,7 @@
             required
           />
         </div>
-        
+
         <div class="form-group">
           <input
             id="password"
@@ -25,9 +25,9 @@
             required
           />
         </div>
-        
+
         <div v-if="error" class="error-message">{{ error }}</div>
-        
+
         <div class="button-wrapper">
           <div class="button-shadow"></div>
           <button type="submit" class="submit-btn" :disabled="loading">
@@ -35,7 +35,7 @@
           </button>
         </div>
       </form>
-      
+
       <div class="login-footer">
         <router-link to="/register" class="link-btn">没有账号？注册</router-link>
       </div>
@@ -43,54 +43,50 @@
   </div>
 </template>
 
-<script>
-export default {
-  name: 'Login',
-  data() {
-    return {
-      email: '',
-      password: '',
-      loading: false,
-      error: ''
+<script setup>
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
+const email = ref('')
+const password = ref('')
+const loading = ref(false)
+const error = ref('')
+
+async function handleLogin() {
+  loading.value = true
+  error.value = ''
+
+  try {
+    const formData = new URLSearchParams()
+    formData.append('username', email.value)
+    formData.append('password', password.value)
+
+    const response = await fetch('/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: formData
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.detail || '登录失败')
     }
-  },
-  methods: {
-    async handleLogin() {
-      this.loading = true
-      this.error = ''
 
-      try {
-        const formData = new URLSearchParams()
-        formData.append('username', this.email)
-        formData.append('password', this.password)
+    const data = await response.json()
 
-        const response = await fetch('/auth/login', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          },
-          body: formData
-        })
+    // 保存 token 到 localStorage
+    localStorage.setItem('access_token', data.access_token)
+    localStorage.setItem('user', JSON.stringify(data.user))
 
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.detail || '登录失败')
-        }
-
-        const data = await response.json()
-
-        // 保存 token 到 localStorage
-        localStorage.setItem('access_token', data.access_token)
-        localStorage.setItem('user', JSON.stringify(data.user))
-
-        // 跳转到首页
-        this.$router.push('/')
-      } catch (err) {
-        this.error = err.message
-      } finally {
-        this.loading = false
-      }
-    }
+    // 跳转到首页（由路由守卫和 watch 处理后续逻辑）
+    router.replace('/')
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    loading.value = false
   }
 }
 </script>

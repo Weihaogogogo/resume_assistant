@@ -1,9 +1,25 @@
 <script setup>
-import { ref, onMounted, watch, nextTick, computed } from 'vue'
+import { ref, onMounted, watch, nextTick, computed, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import RichTextEditor from './components/RichTextEditor.vue'
+import MobileTabBar from './components/MobileTabBar.vue'
+import { labels } from './utils/labels.js'
+
+// 响应式布局状态
+const isMobileView = ref(false)
+const currentTab = ref('chat')
+let resizeObserver = null
+
+// 语言状态
+const currentLang = ref('zh')
+const showTranslateConfirm = ref(false)
+
+// 检测是否为移动端视图
+function checkMobileView() {
+  isMobileView.value = window.innerWidth < 1200
+}
 
 // Tooltip 状态管理
 const tooltipState = ref({ visible: false, text: '', x: 0, bottom: 0 })
@@ -26,6 +42,40 @@ function showTooltip(event, text) {
 function hideTooltip() {
   tooltipState.value.visible = false
 }
+
+// 语言切换函数
+function switchLang(lang) {
+  // 即时切换语言
+  currentLang.value = lang
+
+  // 如果是从中文切换到英文，弹窗询问是否翻译
+  if (lang === 'en') {
+    showTranslateConfirm.value = true
+  }
+}
+
+// 确认翻译
+function confirmTranslate() {
+  showTranslateConfirm.value = false
+
+  // 在聊天区域发送翻译请求
+  const translateMessage = "请将简历内容翻译为英文，需要符合英文表达习惯，保留原汁原味，不要添加或虚构内容。"
+
+  // 调用现有的发送消息逻辑
+  userInput.value = translateMessage
+  sendMessage()
+}
+
+// 取消翻译
+function cancelTranslate() {
+  showTranslateConfirm.value = false
+}
+
+// 获取当前语言的标签
+const t = computed(() => labels[currentLang.value] || labels.zh)
+
+// 翻译弹窗始终使用中文
+const translateLabels = computed(() => labels.zh)
 
 // 认证状态
 const isLoggedIn = ref(false)
@@ -86,13 +136,15 @@ const newSkill = ref('') // 用于添加技能标签
 // 简历编辑弹窗状态（新增）
 const isResumeEditDialogOpen = ref(false)
 const resumeFormData = ref({
-  basics: { name: '', gender: '', phone: '', email: '', target_position: '' },
+  basics: { name: '', gender: '', phone: '', email: '', target_position: '', photo: '' },
   education: [],
   work_experience: [],
   project_experience: [],
   others: { skills: [], certificates: [], languages: [] },
   self_evaluation: []
 })
+// 简历照片错误信息
+const photoError = ref('')
 // 标签输入
 const newResumeSkill = ref('')
 const newResumeCert = ref('')
@@ -102,6 +154,63 @@ const newResumeLang = ref('')
 const workDetailsText = ref('')
 const projectDetailsText = ref('')
 const selfEvalText = ref('')
+
+// 首次进入选择弹窗状态
+const showStartDialog = ref(false)
+const showUploadDialog = ref(false)
+const resumeImageFile = ref(null) // 选择的图片文件
+const resumeImagePreview = ref('') // 图片预览
+const isResumePdf = ref(false) // 是否是PDF文件
+const isParsingResume = ref(false) // 解析中状态
+const resumeFileInput = ref(null) // 简历文件输入元素引用
+const hasResumeFileSelected = ref(false) // 是否已选择简历文件（上传流程已开始，不可返回）
+const isLoadingInitialData = ref(false) // 防止 loadInitialData 重复调用
+let parsingStatusPollInterval = null // 解析状态轮询定时器
+
+// 身份选择弹窗状态
+const showIdentityDialog = ref(false)
+const selectedIdentity = ref(null) // 'intern' | 'campus' | 'jobhop' | 'custom'
+const customIdentity = ref('') // 自定义身份输入
+
+// 预设身份的 AI 首次提问消息
+const IDENTITY_GREETINGS = {
+  intern: {
+    role: 'assistant',
+    content: `你好！我是你的简历助手 👋  
+为了帮你找到合适的**实习机会**，我们可以从你最熟悉的部分开始。
+
+比如：  
+你目前读什么**专业**？学到哪些和实习相关的课程或知识？  
+或者，有没有做过让你觉得特别有收获的**课程项目**或小实践？  
+又或者，你希望尝试哪个方向的**实习**？为什么对它感兴趣？
+
+不用着急写完整简历，先随便聊聊其中一点就好～`
+  },
+  campus: {
+    role: 'assistant',
+    content: `你好！我是你的简历助手 👋  
+校招竞争激烈，但每个人都有独特的故事。我们可以从你最有信心的一块开始梳理。
+
+比如：  
+你最想投递什么类型的**岗位**？为什么觉得它适合你？  
+或者，有没有一段**项目/实习**经历，让你觉得自己"真的搞定了点东西"？  
+又或者，你在学校里做过哪些别人可能没有的经历（**比赛**、**科研**、**创业**、**社团**等）？
+
+选一个你愿意多说几句的方向，我来帮你理清楚怎么写进简历～`
+  },
+  jobhop: {
+    role: 'assistant',
+    content: `你好！我是你的简历助手 👋  
+跳槽或转型的关键，是让新公司看到你过去经验的价值。我们可以从你最想突出的部分聊起。
+
+比如：  
+你现在主要做什么**工作**？最近半年最有成就感的一件事是什么？  
+或者，你希望下一步往哪个方向发展？是什么让你决定要**转型**？  
+又或者，有没有一个**项目**，让你觉得"这段经历绝对值得写在简历里"？
+
+不用马上全部回答，先说说其中一点，我来帮你提炼亮点 💡`
+  }
+}
 
 // 获取认证 headers
 function getAuthHeaders() {
@@ -123,11 +232,19 @@ async function checkLoginStatus() {
     token.value = savedToken
     currentUser.value = JSON.parse(savedUser)
     isLoggedIn.value = true
-    // 加载简历数据
-    await loadResume()
+    console.log('✅ 用户已登录:', currentUser.value?.email)
   } else {
     isLoggedIn.value = false
     currentUser.value = null
+    console.log('❌ 用户未登录')
+  }
+}
+
+// 监听 localStorage 变化（用于跨标签页同步登录状态）
+function handleStorageChange(event) {
+  if (event.key === 'access_token' || event.key === 'user') {
+    console.log('📦 检测到登录状态变化，重新检查...')
+    checkLoginStatus()
   }
 }
 
@@ -140,6 +257,92 @@ onMounted(async () => {
   if (!isLoggedIn.value) {
     return
   }
+
+  // 加载数据并检查是否首次访问
+  await loadInitialData()
+})
+
+// 初始化响应式检测
+onMounted(() => {
+  // 初始检测
+  checkMobileView()
+
+  // 监听 localStorage 变化
+  window.addEventListener('storage', handleStorageChange)
+
+  // 使用 ResizeObserver 监听窗口大小变化
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      checkMobileView()
+    })
+    resizeObserver.observe(document.body)
+  } else {
+    // 降级方案：使用 window resize 事件
+    window.addEventListener('resize', checkMobileView)
+  }
+
+  // 监听聊天容器滚动事件（带节流）
+  // 使用 nextTick 确保 DOM 已挂载
+  nextTick(() => {
+    if (messagesContainer.value) {
+      messagesContainer.value.addEventListener('scroll', handleScroll)
+      console.log('[DEBUG] 滚动监听已添加')
+    } else {
+      console.log('[DEBUG] messagesContainer 未找到')
+    }
+  })
+
+  // 初始化页面滚动状态（直接访问 /admin 时）
+  if (route.path === '/admin') {
+    document.body.style.overflow = 'auto'
+  } else {
+    document.body.style.overflow = 'hidden'
+  }
+})
+
+// 清理监听器
+onUnmounted(() => {
+  window.removeEventListener('storage', handleStorageChange)
+  stopParsingStatusPoll()
+  if (messagesContainer.value) {
+    messagesContainer.value.removeEventListener('scroll', handleScroll)
+  }
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+  } else {
+    window.removeEventListener('resize', checkMobileView)
+  }
+})
+
+// 监听路由变化，自动更新登录状态
+watch(() => route.path, async () => {
+  // 切换到首页时，检查登录状态并加载数据
+  if (route.path === '/') {
+    console.log('[DEBUG] watch: 路由变化到首页，检查登录状态...')
+    await checkLoginStatus()
+    if (isLoggedIn.value) {
+      console.log('[DEBUG] watch: 用户已登录，开始加载数据...')
+      await loadInitialData()
+    }
+  }
+
+  // /admin 页面启用滚动，其他页面禁用页面级滚动
+  if (route.path === '/admin') {
+    document.body.style.overflow = 'auto'
+  } else {
+    document.body.style.overflow = 'hidden'
+  }
+})
+
+// 加载初始数据的函数（同时检查首次访问）
+async function loadInitialData() {
+  // 防止重复调用
+  if (isLoadingInitialData.value) {
+    console.log('[DEBUG] loadInitialData: 已在加载中，跳过重复调用')
+    return
+  }
+  isLoadingInitialData.value = true
+  console.log('[DEBUG] loadInitialData: 开始加载...')
 
   try {
     const response = await fetch('/load_resume', {
@@ -157,90 +360,26 @@ onMounted(async () => {
     const data = await response.json()
     resumeData.value = data
 
-    // 加载JD数据（新增）
-    try {
-      const jdResponse = await fetch('/load_jd', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({})
-      })
-      if (jdResponse.status === 401) {
-        logout()
-        return
-      }
-      const jdResult = await jdResponse.json()
-      if (jdResult && Object.keys(jdResult).length > 0) {
-        jdData.value = jdResult
-      }
-    } catch (jdError) {
-      console.log('暂无岗位数据，可以上传目标岗位信息获取针对性的简历优化建议')
-    }
+    // 检查解析状态
+    const parsingStatus = data.parsing_status || 'none'
+    console.log(`[DEBUG] loadInitialData: parsingStatus="${parsingStatus}"`)
 
-    // 加载对话历史
-    try {
-      const convResponse = await fetch('/load_conversation', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ session_id: sessionId.value })
-      })
-      if (convResponse.status === 401) {
-        logout()
-        return
-      }
-      const convData = await convResponse.json()
-      if (Array.isArray(convData) && convData.length > 0) {
-        messages.value = convData
-      } else {
-        // 没有历史消息，添加欢迎消息
-        messages.value.push({
-          id: Date.now(),
-          role: 'assistant',
-          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-        })
-      }
-    } catch (convError) {
-      console.log('加载对话历史失败')
-      messages.value.push({
-        id: Date.now(),
-        role: 'assistant',
-        content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-      })
-    }
-  } catch (error) {
-    console.error('加载简历失败:', error)
-    messages.value.push({
-      id: Date.now(),
-      role: 'assistant',
-      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
-    })
-  }
-})
-
-// 监听路由变化，自动更新登录状态
-watch(() => route.path, () => {
-  checkLoginStatus()
-  // 如果登录成功且在首页，尝试加载数据
-  if (isLoggedIn.value && route.path === '/') {
-    loadInitialData()
-  }
-})
-
-// 加载初始数据的函数
-async function loadInitialData() {
-  try {
-    const response = await fetch('/load_resume', {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({})
-    })
-
-    if (response.status === 401) {
-      logout()
+    // 如果正在解析中，显示上传弹窗并启动轮询
+    if (parsingStatus === 'parsing') {
+      console.log('📋 检测到简历正在解析中，启动轮询...')
+      showUploadDialog.value = true
+      hasResumeFileSelected.value = true
+      isParsingResume.value = true
+      resumeImagePreview.value = ''
+      resumeImageFile.value = null
+      isResumePdf.value = false
+      // 启动轮询检查解析状态
+      startParsingStatusPoll()
       return
     }
 
-    const data = await response.json()
-    resumeData.value = data
+    // 停止轮询（如果之前在轮询中）
+    stopParsingStatusPoll()
 
     // 加载JD数据
     try {
@@ -261,6 +400,12 @@ async function loadInitialData() {
       console.log('暂无岗位数据')
     }
 
+    // 检查是否首次进入（无简历且无聊天记录）
+    // 修正判断逻辑：检查basics中是否有有效字段
+    const { parsing_status, basics, ...rest } = data
+    const hasResume = basics && (basics.name || basics.target_position || Object.keys(rest).length > 0)
+    console.log(`[DEBUG] loadInitialData: hasResume=${hasResume}, basics=${JSON.stringify(basics)}`)
+
     // 加载对话历史
     try {
       const convResponse = await fetch('/load_conversation', {
@@ -273,24 +418,187 @@ async function loadInitialData() {
         return
       }
       const convData = await convResponse.json()
-      if (Array.isArray(convData) && convData.length > 0) {
+      const hasChatHistory = Array.isArray(convData) && convData.length > 0
+      console.log(`[DEBUG] loadInitialData: hasChatHistory=${hasChatHistory}`)
+
+      // 首次进入检测：无简历且无聊天记录
+      if (!hasResume && !hasChatHistory) {
+        console.log('[DEBUG] 首次进入，显示开始选择弹窗')
+        showStartDialog.value = true
+        return
+      }
+
+      if (hasChatHistory) {
         messages.value = convData
       } else {
-        messages.value.push({
+        messages.value = [{
           id: Date.now(),
           role: 'assistant',
-          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-        })
+          content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历信息等。简历内容、修改'
+        }]
       }
     } catch (convError) {
-      messages.value.push({
+      messages.value = [{
         id: Date.now(),
         role: 'assistant',
         content: '你好！我是简历助手，有什么可以帮助你的吗？你可以询问简历内容、修改简历信息等。'
-      })
+      }]
     }
   } catch (error) {
     console.error('加载数据失败:', error)
+    messages.value = [{
+      id: Date.now(),
+      role: 'assistant',
+      content: '抱歉，加载简历失败。请确保MCP服务已启动。'
+    }]
+  } finally {
+    isLoadingInitialData.value = false
+    console.log('[DEBUG] loadInitialData: 完成')
+  }
+}
+
+// 轮询检查解析状态
+async function pollParsingStatus() {
+  try {
+    const response = await fetch('/api/resume/parsing_status', {
+      method: 'GET',
+      headers: getAuthHeaders()
+    })
+
+    if (response.status === 401) {
+      logout()
+      return
+    }
+
+    const data = await response.json()
+    const status = data.parsing_status || 'none'
+    console.log(`[DEBUG] pollParsingStatus: status="${status}"`)
+
+    if (status === 'completed') {
+      // 解析完成，重新加载简历数据
+      console.log('✅ 解析完成，重新加载数据...')
+      stopParsingStatusPoll()
+      isParsingResume.value = false
+      showUploadDialog.value = false
+      // 重新加载简历
+      await loadResumeData()
+
+      // 刷新页面后首次加载时，需要调用 first_message_from_resume 生成首次提问
+      // 检查是否已有聊天历史，如果没有则调用
+      if (messages.value.length === 0) {
+        console.log('📋 轮询检测到解析完成，调用 first_message_from_resume...')
+        isLoading.value = true
+        try {
+          const firstMsgResponse = await fetch('/api/chat/first_message_from_resume', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({
+              session_id: sessionId.value || ''
+            })
+          })
+
+          const firstMsgData = await firstMsgResponse.json()
+          isLoading.value = false
+
+          if (!firstMsgData.error && firstMsgData.message) {
+            const aiMessage = firstMsgData.message || firstMsgData.content
+            messages.value = [{
+              id: Date.now(),
+              role: 'assistant',
+              content: aiMessage
+            }]
+
+            if (firstMsgData.session_id) {
+              sessionId.value = firstMsgData.session_id
+            }
+
+            // 保存对话到数据库
+            try {
+              await fetch('/save_conversation', {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                  session_id: sessionId.value,
+                  messages: [{ type: 'ai', content: aiMessage }]
+                })
+              })
+            } catch (saveError) {
+              console.error('保存对话失败:', saveError)
+            }
+
+            // 保存到数据库和上下文
+            try {
+              await fetch('/api/chat/save_ai_message', {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({
+                  message: aiMessage,
+                  session_id: sessionId.value || ''
+                })
+              })
+            } catch (saveAiError) {
+              console.error('保存 AI 消息失败:', saveAiError)
+            }
+          }
+        } catch (firstMsgError) {
+          isLoading.value = false
+          console.error('获取首次提问失败:', firstMsgError)
+        }
+      }
+    } else if (status === 'failed') {
+      // 解析失败
+      console.error('❌ 解析失败')
+      stopParsingStatusPoll()
+      isParsingResume.value = false
+      alert('简历解析失败，请重新上传')
+    }
+    // 如果还是 'parsing'，继续轮询
+  } catch (error) {
+    console.error('检查解析状态失败:', error)
+  }
+}
+
+// 启动解析状态轮询
+function startParsingStatusPoll() {
+  // 先清除之前的轮询
+  stopParsingStatusPoll()
+  // 立即检查一次
+  pollParsingStatus()
+  // 每3秒检查一次
+  parsingStatusPollInterval = setInterval(pollParsingStatus, 3000)
+}
+
+// 停止解析状态轮询
+function stopParsingStatusPoll() {
+  if (parsingStatusPollInterval) {
+    clearInterval(parsingStatusPollInterval)
+    parsingStatusPollInterval = null
+  }
+}
+
+// 加载简历数据（不检查解析状态）
+async function loadResumeData() {
+  try {
+    const response = await fetch('/load_resume', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({})
+    })
+
+    if (response.status === 401) {
+      logout()
+      return
+    }
+
+    const data = await response.json()
+    resumeData.value = data
+    // 更新简历内容
+    const { parsing_status, ...resumeContent } = data
+    if (resumeContent && Object.keys(resumeContent).length > 0) {
+      console.log('✅ 简历数据已加载')
+    }
+  } catch (error) {
+    console.error('加载简历数据失败:', error)
   }
 }
 
@@ -452,6 +760,7 @@ async function sendMessage() {
                   }
                 }
               } else if (data.type === 'final') {
+                console.log('[前端] 收到 final 事件, isLoading before:', isLoading.value, 'isResponding:', isResponding.value)
                 // 停止加载文案切换
                 if (loadingTextInterval) {
                   clearTimeout(loadingTextInterval)
@@ -512,8 +821,10 @@ async function sendMessage() {
                 // 标记有 confirm area，禁用输入
                 hasConfirmArea.value = true
               } else if (data.type === 'end') {
+                console.log('[前端] 收到 end 事件, isResponding before:', isResponding.value, 'isLoading:', isLoading.value)
                 // 结束信号，关闭连接
                 isResponding.value = false
+                console.log('[前端] isResponding 已设置为 false')
                 // 只在流式响应结束时调用一次updateResumeData()
                 updateResumeData()
                 // 更新会话ID并保存到localStorage
@@ -985,6 +1296,101 @@ function convertDateRangeToSave(item) {
 // 关闭简历编辑弹窗
 function closeResumeEditDialog() {
   isResumeEditDialogOpen.value = false
+  photoError.value = ''
+}
+
+// 处理证件照上传
+function handlePhotoUpload(event) {
+  const file = event.target.files[0]
+  photoError.value = ''
+  
+  if (!file) return
+  
+  // 1. 验证文件类型
+  if (!file.type.startsWith('image/')) {
+    photoError.value = '请选择图片文件（jpg、png 等）'
+    return
+  }
+  
+  // 2. 验证文件大小（限制 2MB）
+  if (file.size > 2 * 1024 * 1024) {
+    photoError.value = '照片大小不能超过 2MB，请选择更小的图片'
+    event.target.value = ''
+    return
+  }
+  
+  // 3. 读取并验证图片尺寸
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const img = new Image()
+    img.onload = () => {
+      const width = img.width
+      const height = img.height
+      
+      // 1寸照片比例约 3:3.5，允许误差 ±20%
+      const ratio = width / height
+      const targetRatio = 3 / 3.5  // 约 0.857
+      const minRatio = targetRatio * 0.8
+      const maxRatio = targetRatio * 1.2
+      
+      // 像素尺寸限制
+      const minPixels = 200
+      
+      if (width < minPixels || height < minPixels) {
+        photoError.value = `照片像素太低，请选择至少 ${minPixels}x${minPixels} 像素的图片`
+        return
+      }
+      
+      // 比例提示（非强制）
+      if (ratio < minRatio || ratio > maxRatio) {
+        console.warn('照片比例偏离 1 寸标准')
+      }
+      
+      // 4. 压缩图片
+      compressAndSave(img)
+    }
+    img.src = e.target.result
+  }
+  reader.readAsDataURL(file)
+}
+
+// 压缩并保存图片
+function compressAndSave(img) {
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')
+  
+  // 限制最大尺寸
+  const MAX_SIZE = 400
+  let width = img.width
+  let height = img.height
+  
+  if (width > height) {
+    if (width > MAX_SIZE) {
+      height = height * (MAX_SIZE / width)
+      width = MAX_SIZE
+    }
+  } else {
+    if (height > MAX_SIZE) {
+      width = width * (MAX_SIZE / height)
+      height = MAX_SIZE
+    }
+  }
+  
+  canvas.width = width
+  canvas.height = height
+  ctx.drawImage(img, 0, 0, width, height)
+  
+  // 转换为 Base64（质量 0.8）
+  resumeFormData.value.basics.photo = canvas.toDataURL('image/jpeg', 0.8)
+}
+
+// 删除证件照
+function removePhoto() {
+  resumeFormData.value.basics.photo = ''
+  photoError.value = ''
+  // 清空文件输入
+  const input = document.querySelector('.photo-input')
+  if (input) input.value = ''
 }
 
 // 添加学历
@@ -1388,6 +1794,386 @@ function handleDialogKeydown(event) {
   }
 }
 
+// ==================== 首次进入选择弹窗 ====================
+
+// 打开开始选择弹窗（首次进入且无简历时）
+function openStartDialog() {
+  showStartDialog.value = true
+}
+
+// 关闭开始弹窗
+function closeStartDialog() {
+  showStartDialog.value = false
+}
+
+// 从空白创建简历 - 打开身份选择弹窗
+function startFromBlank() {
+  closeStartDialog()
+  // 打开身份选择弹窗
+  showIdentityDialog.value = true
+  selectedIdentity.value = null
+  customIdentity.value = ''
+}
+
+// 关闭身份选择弹窗
+function closeIdentityDialog() {
+  showIdentityDialog.value = false
+  selectedIdentity.value = null
+  customIdentity.value = ''
+}
+
+// 从身份选择返回上一步（回到开始选择弹窗）
+function backToStartFromIdentity() {
+  showIdentityDialog.value = false
+  selectedIdentity.value = null
+  customIdentity.value = ''
+  showStartDialog.value = true
+}
+
+// 处理预设身份选择
+function selectIdentity(identity) {
+  selectedIdentity.value = identity
+  customIdentity.value = ''
+}
+
+// 确认身份选择
+async function confirmIdentitySelection() {
+  if (!selectedIdentity.value) {
+    alert('请选择一个身份类型')
+    return
+  }
+
+  if (selectedIdentity.value === 'custom' && !customIdentity.value.trim()) {
+    alert('请输入你的身份描述')
+    return
+  }
+
+  // 先保存选择的身份，因为 closeIdentityDialog 会重置 selectedIdentity
+  const identity = selectedIdentity.value
+  const customDesc = customIdentity.value.trim()
+
+  closeIdentityDialog()
+  closeStartDialog()
+
+  if (identity === 'custom') {
+    // 自定义身份：调用后端 API 获取首次提问
+    isLoading.value = true
+    try {
+      const response = await fetch('/api/chat/first_message', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          user_type: 'custom',
+          custom_identity: customDesc,
+          session_id: sessionId.value || ''
+        })
+      })
+
+      const data = await response.json()
+      
+      isLoading.value = false
+
+      if (data.error) {
+        alert(data.error)
+        return
+      }
+
+      const aiMessage = data.message || data.content
+
+      messages.value = [{
+        id: Date.now(),
+        role: 'assistant',
+        content: aiMessage
+      }]
+
+      // 保存 session_id 到全局
+      if (data.session_id) {
+        sessionId.value = data.session_id
+      }
+
+      // 保存对话到数据库（后端已保存，但确保前端也保存一次）
+      try {
+        await fetch('/save_conversation', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            session_id: sessionId.value,
+            messages: [
+              { type: 'human', content: `我的身份描述：${customDesc}` },
+              { type: 'ai', content: aiMessage }
+            ]
+          })
+        })
+      } catch (saveError) {
+        console.error('保存对话失败:', saveError)
+      }
+
+      // 调用后端保存 AI 消息（保存到数据库和上下文）
+      try {
+        await fetch('/api/chat/save_ai_message', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            message: aiMessage,
+            session_id: sessionId.value || ''
+          })
+        })
+      } catch (saveAiError) {
+        console.error('保存 AI 消息失败:', saveAiError)
+      }
+    } catch (error) {
+      isLoading.value = false
+      console.error('获取首次提问失败:', error)
+      alert('获取首次提问失败，请重试')
+    }
+  } else {
+    // 预设身份：直接使用预制消息并保存到数据库
+    isLoading.value = true
+    const greeting = IDENTITY_GREETINGS[identity]
+    const aiMessage = greeting.content
+
+    messages.value = [{
+      id: Date.now(),
+      role: greeting.role,
+      content: aiMessage
+    }]
+
+    // 保存对话到数据库
+    try {
+      await fetch('/save_conversation', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          session_id: sessionId.value,
+          messages: [{ type: 'ai', content: aiMessage }]
+        })
+      })
+    } catch (saveError) {
+      console.error('保存对话失败:', saveError)
+    }
+
+    isLoading.value = false
+
+    // 调用后端保存 AI 消息
+    try {
+      const saveResponse = await fetch('/api/chat/save_ai_message', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          message: greeting.content,
+          session_id: sessionId.value || ''
+        })
+      })
+
+      const saveData = await saveResponse.json()
+      if (saveData.session_id) {
+        sessionId.value = saveData.session_id
+      }
+    } catch (saveError) {
+      console.error('保存消息失败:', saveError)
+    }
+  }
+}
+
+// 显示上传弹窗
+function showUploadResumeDialog() {
+  closeStartDialog()
+  showUploadDialog.value = true
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false  // 重置，允许返回
+}
+
+// 触发文件选择器
+function triggerResumeFileSelect() {
+  resumeFileInput.value?.click()
+}
+
+// 关闭上传弹窗
+function closeUploadDialog() {
+  showUploadDialog.value = false
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false
+}
+
+// 返回上一步（回到开始选择弹窗）
+function backToStartDialog() {
+  showUploadDialog.value = false
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false
+  showStartDialog.value = true
+}
+
+// 重新选择文件
+function reselectResumeFile() {
+  resumeImagePreview.value = ''
+  resumeImageFile.value = null
+  isResumePdf.value = false
+  hasResumeFileSelected.value = false  // 重置，允许返回
+}
+
+// 处理简历图片选择
+function handleResumeImageSelect(event) {
+  const file = event.target.files[0]
+  if (!file) return
+
+  // 验证文件类型
+  if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
+    alert('请上传图片文件（JPG、PNG）或 PDF')
+    return
+  }
+
+  // 验证文件大小（5MB）
+  if (file.size > 5 * 1024 * 1024) {
+    alert('文件大小不能超过 5MB')
+    return
+  }
+
+  resumeImageFile.value = file
+  hasResumeFileSelected.value = true  // 已选择文件，不可返回上一步
+
+  // 检测是否是PDF文件
+  isResumePdf.value = file.type === 'application/pdf'
+
+  // 生成预览（PDF不生成图片预览，只显示图标）
+  if (isResumePdf.value) {
+    resumeImagePreview.value = 'pdf'  // 设置为非空值以触发界面切换
+  } else {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      resumeImagePreview.value = e.target.result
+    }
+    reader.readAsDataURL(file)
+  }
+}
+
+// 解析并保存简历
+async function parseAndSaveResume() {
+  if (!resumeImageFile.value) {
+    alert('请先选择简历图片')
+    return
+  }
+
+  isParsingResume.value = true
+  resumeImagePreview.value = ''
+
+  try {
+    // 使用 FormData 直接上传文件
+    const formData = new FormData()
+    formData.append('file', resumeImageFile.value)
+
+    // 构建 headers（不设置 Content-Type，让浏览器自动处理 multipart/form-data）
+    const headers = {}
+    if (token.value) {
+      headers['Authorization'] = `Bearer ${token.value}`
+    }
+
+    const response = await fetch('/api/resume/parse_and_save', {
+      method: 'POST',
+      headers: headers,
+      body: formData
+    })
+
+    const data = await response.json()
+
+    if (data.success) {
+      // 更新简历数据
+      resumeData.value = data.resume_data
+      closeUploadDialog()
+
+      // 获取 AI 的首次针对性提问
+      isLoading.value = true
+      try {
+        const firstMsgResponse = await fetch('/api/chat/first_message_from_resume', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            session_id: sessionId.value || ''
+          })
+        })
+
+        const firstMsgData = await firstMsgResponse.json()
+
+        isLoading.value = false
+
+        if (firstMsgData.error) {
+          // 如果获取首次提问失败，使用通用欢迎消息
+          messages.value = [{
+            id: Date.now(),
+            role: 'assistant',
+            content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
+          }]
+        } else {
+          // 显示 AI 的首次针对性提问
+          const aiMessage = firstMsgData.message || firstMsgData.content
+          messages.value = [{
+            id: Date.now(),
+            role: 'assistant',
+            content: aiMessage
+          }]
+
+          // 保存 session_id 到全局
+          if (firstMsgData.session_id) {
+            sessionId.value = firstMsgData.session_id
+          }
+
+          // 保存对话到数据库
+          try {
+            await fetch('/save_conversation', {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({
+                session_id: sessionId.value,
+                messages: [{ type: 'ai', content: aiMessage }]
+              })
+            })
+          } catch (saveError) {
+            console.error('保存对话失败:', saveError)
+          }
+
+          // 调用后端保存 AI 消息（保存到数据库和上下文）
+          try {
+            await fetch('/api/chat/save_ai_message', {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({
+                message: aiMessage,
+                session_id: sessionId.value || ''
+              })
+            })
+          } catch (saveAiError) {
+            console.error('保存 AI 消息失败:', saveAiError)
+          }
+        }
+      } catch (firstMsgError) {
+        isLoading.value = false
+        console.error('获取首次提问失败:', firstMsgError)
+        // 使用通用欢迎消息
+        messages.value = [{
+          id: Date.now(),
+          role: 'assistant',
+          content: '简历已解析完成！我是简历助手，有什么可以帮助你的吗？'
+        }]
+      }
+    } else {
+      alert('解析失败：' + data.error)
+      // 解析失败，保留状态让用户可以重试
+    }
+  } catch (error) {
+    console.error('解析简历失败:', error)
+    alert('解析简历失败，请稍后重试')
+  } finally {
+    // 重置前端状态
+    isParsingResume.value = false
+    hasResumeFileSelected.value = false
+  }
+}
+
 // 自动滚动到底部，添加丝滑过渡效果
 function scrollToBottom() {
   if (messagesContainer.value) {
@@ -1399,6 +2185,46 @@ function scrollToBottom() {
   }
 }
 
+// 滑动至底部按钮状态
+const showScrollToBottomButton = ref(false)
+let scrollThrottleTimer = null
+
+// 检查是否需要显示滑动至底部按钮
+function checkScrollPosition() {
+  if (!messagesContainer.value) {
+    console.log('[DEBUG] checkScrollPosition: messagesContainer 为空')
+    return
+  }
+  
+  const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+  
+  console.log(`[DEBUG] scrollTop=${scrollTop}, scrollHeight=${scrollHeight}, clientHeight=${clientHeight}, distanceFromBottom=${distanceFromBottom}`)
+  
+  // 滚动距离底部超过20像素时显示按钮
+  showScrollToBottomButton.value = distanceFromBottom > 1500
+  console.log(`[DEBUG] showScrollToBottomButton=${showScrollToBottomButton.value}`)
+}
+
+// 滚动事件节流处理（100ms间隔）
+function handleScroll() {
+  if (scrollThrottleTimer) return
+  
+  scrollThrottleTimer = setTimeout(() => {
+    scrollThrottleTimer = null
+    checkScrollPosition()
+  }, 100)
+}
+
+// 点击滑动至底部按钮
+function handleScrollToBottomClick() {
+  scrollToBottom()
+  // 滚动完成后隐藏按钮
+  setTimeout(() => {
+    showScrollToBottomButton.value = false
+  }, 500)
+}
+
 // 监听消息列表变化，自动滚动到底部
 // 使用deep: true监听消息内容的变化，确保流式输出时也能自动滚动
 watch(
@@ -1407,6 +2233,8 @@ watch(
     // 使用nextTick确保DOM已更新
     nextTick(() => {
       scrollToBottom()
+      // 检查是否需要显示滚动按钮
+      checkScrollPosition()
     })
   },
   { deep: true }
@@ -1414,14 +2242,277 @@ watch(
 </script>
 
 <template>
+  <!-- 首次进入选择弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showStartDialog" class="modal-mask">
+        <div class="modal-container start-modal" @click.stop>
+          <div class="modal-header">
+            <div class="header-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+              </svg>
+            </div>
+            <h2>创建简历</h2>
+          </div>
+          <p class="modal-desc">选择一种方式开始创建你的简历</p>
+          <div class="option-list">
+            <button @click="startFromBlank" class="option-item">
+              <div class="optionGraphic graphic-plus">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </div>
+              <div class="option-content">
+                <span class="option-label">从空白创建</span>
+                <span class="option-sublabel">手动填写，逐步完善</span>
+              </div>
+              <svg class="option-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+            <button @click="showUploadResumeDialog" class="option-item primary">
+              <div class="optionGraphic graphic-upload">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </div>
+              <div class="option-content">
+                <span class="option-label">上传已有简历</span>
+                <span class="option-sublabel">支持图片或 PDF，自动解析</span>
+              </div>
+              <svg class="option-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 身份选择弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showIdentityDialog" class="modal-mask">
+        <div class="modal-container start-modal identity-selection" @click.stop>
+          <div class="modal-header">
+            <div class="header-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+            </div>
+            <h2>选择你的身份</h2>
+            <div class="modal-actions">
+              <button @click="backToStartFromIdentity" class="modal-back">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="19" y1="12" x2="5" y2="12"></line>
+                  <polyline points="12 19 5 12 12 5"></polyline>
+                </svg>
+                返回
+              </button>
+            </div>
+          </div>
+          <p class="modal-desc">选择最符合你当前情况的身份类型</p>
+          
+          <div class="identity-cards-container">
+            <!-- 四个身份卡片竖排 -->
+            <div class="identity-cards-row">
+              <!-- 寻找实习 -->
+              <button 
+                @click="selectIdentity('intern')" 
+                :class="['identity-card', { active: selectedIdentity === 'intern' }]"
+              >
+                <div class="identity-icon">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">寻找实习</div>
+                  <div class="identity-desc">正在寻找实习机会的学生</div>
+                </div>
+              </button>
+              
+              <!-- 校招应届 -->
+              <button 
+                @click="selectIdentity('campus')" 
+                :class="['identity-card', { active: selectedIdentity === 'campus' }]"
+              >
+                <div class="identity-icon pink">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+                    <path d="M12 16v4"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">校招应届</div>
+                  <div class="identity-desc">准备参加校园招聘的应届毕业生</div>
+                </div>
+              </button>
+              
+              <!-- 跳槽转型 -->
+              <button 
+                @click="selectIdentity('jobhop')" 
+                :class="['identity-card', { active: selectedIdentity === 'jobhop' }]"
+              >
+                <div class="identity-icon">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">跳槽转型</div>
+                  <div class="identity-desc">计划跳槽的职场白领</div>
+                </div>
+              </button>
+
+              <!-- 自定义 -->
+              <button 
+                @click="selectIdentity('custom')" 
+                :class="['identity-card', { active: selectedIdentity === 'custom' }]"
+              >
+                <div class="identity-icon pink">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </div>
+                <div class="identity-card-content">
+                  <div class="identity-title">自定义</div>
+                  <div class="identity-desc">不符合上述选项，描述你的情况</div>
+                </div>
+              </button>
+            </div>
+
+            <!-- 自定义身份输入框 -->
+            <div v-if="selectedIdentity === 'custom'" class="custom-identity-input">
+              <textarea 
+                v-model="customIdentity" 
+                placeholder="请简单描述你的情况，例如：我是工作3年的产品经理，想转行做技术..."
+                rows="3"
+              ></textarea>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button @click="confirmIdentitySelection" :disabled="!selectedIdentity || (selectedIdentity === 'custom' && !customIdentity.trim())" class="btn-primary full-width">
+              开始创建简历
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 简历上传弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showUploadDialog" class="modal-mask">
+        <div class="modal-container upload-modal" @click.stop>
+          <div class="modal-header">
+            <div class="header-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+            </div>
+            <h2>上传简历</h2>
+            <div class="modal-actions">
+              <!-- 未选择文件且不在解析中时显示返回按钮 -->
+              <button v-if="!hasResumeFileSelected && !isParsingResume" @click="backToStartDialog" class="modal-back">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="19" y1="12" x2="5" y2="12"></line>
+                  <polyline points="12 19 5 12 12 5"></polyline>
+                </svg>
+                返回
+              </button>
+            </div>
+          </div>
+          <div class="modal-body">
+            <!-- 未选择文件且不在解析中时显示上传框 -->
+            <div v-if="!resumeImagePreview && !isParsingResume" class="upload-box" @click="triggerResumeFileSelect()">
+              <input type="file" accept="image/*,.pdf" @change="handleResumeImageSelect" ref="resumeFileInput" class="hidden-input" />
+              <div class="upload-graphic">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </div>
+              <p class="upload-title">点击上传简历</p>
+              <p class="upload-hint">自动解析并生成结构化简历</p>
+              <span class="upload-formats">支持 JPG、PNG、PDF</span>
+            </div>
+            <!-- 解析中状态显示 -->
+            <div v-if="isParsingResume && !resumeImagePreview" class="parsing-status">
+              <div class="parsing-spinner"></div>
+              <p class="parsing-text">简历正在解析中...</p>
+              <p class="parsing-hint">请稍候，解析完成后将自动显示结果</p>
+            </div>
+            <div v-else-if="!isParsingResume && resumeImagePreview" class="preview-box">
+              <!-- PDF文件预览 -->
+              <div v-if="isResumePdf" class="pdf-preview">
+                <div class="pdf-icon-wrapper">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                  </svg>
+                </div>
+                <p class="pdf-filename">{{ resumeImageFile?.name }}</p>
+                <p class="pdf-hint">PDF文件准备解析</p>
+              </div>
+              <!-- 图片预览 -->
+              <img v-else :src="resumeImagePreview" alt="简历预览" class="preview-img" />
+              <button @click="reselectResumeFile" class="btn-reselect">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                重新选择
+              </button>
+            </div>
+          </div>
+          <div class="modal-footer" v-if="resumeImagePreview || isParsingResume">
+            <button @click="parseAndSaveResume" :disabled="isParsingResume" class="btn-primary full-width">
+              {{ isParsingResume ? '解析中...' : '开始解析' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   <!-- 顶部导航栏（全屏宽度） -->
   <header class="app-header">
     <div class="header-content">
       <h1>
-        <img src="@/assets/offerflow.svg" alt="OfferFlow" class="app-logo" />
+        <router-link to="/">
+          <img src="@/assets/offerflow.svg" alt="OfferFlow" class="app-logo" />
+        </router-link>
       </h1>
-      <!-- 移除消息数量提示 -->
       <div class="header-info">
+        <div class="header-contact">
+          <span class="contact-link">联系我们</span>
+          <div class="contact-tooltip">
+            <p class="tooltip-text">进产品交流群请扫码添加</p>
+            <p class="tooltip-text">备注"入群"更快通过~</p>
+            <img src="@/assets/wechatcode.jpg" alt="微信" class="wechat-qr" />
+          </div>
+        </div>
         <template v-if="isLoggedIn">
           <span class="user-email">{{ currentUser?.email }}</span>
           <button @click="logout" class="logout-btn">登出</button>
@@ -1441,7 +2532,9 @@ watch(
 
     <!-- 已登录且非管理页面：显示主内容（聊天界面） -->
     <div v-if="isLoggedIn && !isAdminRoute" class="main-content">
-      <!-- 左侧聊天区 -->
+      <!-- 桌面端：并排显示 -->
+      <template v-if="!isMobileView">
+        <!-- 左侧聊天区 -->
       <div class="chat-section">
         <div class="chat-container">
           <div class="messages-container" ref="messagesContainer">
@@ -1462,6 +2555,17 @@ watch(
             <span class="loading-text">{{ loadingText }}</span>
           </div>
           </div>
+          
+          <!-- 滑动至底部按钮 -->
+          <Transition name="fade">
+            <button
+              v-if="showScrollToBottomButton"
+              class="scroll-to-bottom-btn"
+              @click="handleScrollToBottomClick"
+            >
+              <span class="scroll-arrow">↓</span>
+            </button>
+          </Transition>
         </div>
         
         <!-- 悬浮输入容器 -->
@@ -1559,9 +2663,96 @@ watch(
       <!-- 右侧简历预览区 -->
       <div class="resume-section">
         <div class="resume-content">
-          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" />
+          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
         </div>
       </div>
+      </template>
+
+      <!-- 移动端：Tab 切换显示 -->
+      <template v-else>
+        <!-- 聊天 Tab 内容 -->
+        <Transition name="tab-content" mode="out-in">
+          <div v-if="currentTab === 'chat'" class="mobile-chat-view" key="chat">
+            <div class="chat-container">
+              <div class="messages-container" ref="messagesContainer">
+                <ChatMessage
+                  v-for="message in messages"
+                  :key="message.id + '_' + (message.content?.length || 0)"
+                  :message="message"
+                  @optionClick="handleOptionClick"
+                />
+                <div v-if="isLoading" class="loading-indicator">
+                  <div class="loading-spinner">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="32" stroke-dashoffset="10" opacity="0.3"/>
+                      <path d="M10 3 A 7 7 0 0 1 10 17 A 7 7 0 0 1 10 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="loading-text">{{ loadingText }}</span>
+                </div>
+              </div>
+              
+              <!-- 滑动至底部按钮 -->
+              <Transition name="fade">
+                <button
+                  v-if="showScrollToBottomButton"
+                  class="scroll-to-bottom-btn"
+                  @click="handleScrollToBottomClick"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 9l6 6 6-6"/>
+                  </svg>
+                </button>
+              </Transition>
+            </div>
+            
+            <!-- 悬浮输入容器 -->
+            <div class="floating-input-container mobile-input">
+              <div v-if="uploadedFiles.length > 0" class="uploaded-files">
+                <div v-for="file in uploadedFiles" :key="file.id" class="file-thumbnail">
+                  <div v-if="file.type.startsWith('image/')" class="file-icon image-icon" :style="{ cursor: 'pointer' }" @click="openImagePreview(file)">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                  </div>
+                  <div v-else-if="file.type === 'application/pdf'" class="file-icon pdf-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                  </div>
+                  <div class="file-name">{{ file.name }}</div>
+                  <div @click="deleteFile(file.id)" class="delete-file-btn">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="input-wrapper">
+                <input type="file" ref="fileInput" multiple accept="image/png, image/jpeg, image/jpg, application/pdf" @change="handleFileSelect" style="display: none;" />
+                <div class="textarea-container">
+                  <textarea v-model="userInput" @keydown="handleKeyDown" @paste="handlePaste" placeholder="输入你的问题或请求..." rows="1" :disabled="isLoading || isResponding"></textarea>
+                  <div class="toolbar mobile-toolbar">
+                    <button @click="fileInput?.click()" class="icon-btn" :disabled="isLoading || isResponding">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    </button>
+                    <button @click="openFullscreenDialog" class="icon-btn" :disabled="isLoading || isResponding">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+                    </button>
+                    <div class="send-btn-placeholder" v-if="!(userInput.trim() || uploadedFiles.length > 0)"></div>
+                    <button v-if="userInput.trim() || uploadedFiles.length > 0" @click="sendMessage" class="icon-btn send-btn" :disabled="isLoading || isResponding">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 简历 Tab 内容 -->
+          <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" key="resume">
+            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+          </div>
+        </Transition>
+
+        <!-- 移动端底部 Tab 栏 -->
+        <MobileTabBar :active-tab="currentTab" @update:activeTab="currentTab = $event" />
+      </template>
     </div> <!-- 闭合 v-else main-content -->
   </div>
 
@@ -1628,6 +2819,29 @@ watch(
     </Transition>
   </Teleport>
 
+  <!-- 翻译确认弹窗 -->
+  <Teleport to="body">
+    <Transition name="dialog-fade">
+      <div v-if="showTranslateConfirm" class="translate-dialog-overlay" @click.self="cancelTranslate">
+        <div class="translate-dialog">
+          <div class="dialog-header">
+            <h3>{{ translateLabels.translateConfirmTitle }}</h3>
+            <button class="dialog-close-btn" @click="cancelTranslate" title="关闭">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+          <div class="dialog-body">
+            <p>{{ translateLabels.translateConfirmMessage }}</p>
+          </div>
+          <div class="dialog-footer">
+            <button class="cancel-btn" @click="cancelTranslate">{{ translateLabels.cancel }}</button>
+            <button class="confirm-btn" @click="confirmTranslate">{{ translateLabels.confirm }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   <!-- JD上传弹窗（新增） -->
   <Teleport to="body">
     <Transition name="dialog-fade">
@@ -1642,7 +2856,14 @@ watch(
 
           <!-- 输入模式 -->
           <div v-if="jdInputMode === 'input'" class="jd-input-section">
-            <div class="input-group">
+            <!-- 有图片时：显示图片预览 -->
+            <div v-if="jdInputImage" class="input-group">
+              <label>目标岗位描述（图片）</label>
+              <img :src="jdInputImage" class="jd-image-preview" alt="图片预览" />
+              <button class="remove-image-btn" @click="jdInputImage = ''">移除图片</button>
+            </div>
+            <!-- 没有图片时：显示输入框 -->
+            <div v-else class="input-group">
               <label>粘贴职位描述</label>
               <textarea
                 v-model="jdInputText"
@@ -1650,11 +2871,6 @@ watch(
                 placeholder="粘贴招聘要求内容，支持直接粘贴图片（Ctrl+V）..."
                 rows="10"
               ></textarea>
-            </div>
-            <div v-if="jdInputImage" class="input-group">
-              <label>已识别的图片</label>
-              <img :src="jdInputImage" class="jd-image-preview" alt="图片预览" />
-              <button class="remove-image-btn" @click="jdInputImage = ''">移除图片</button>
             </div>
           </div>
 
@@ -1792,6 +3008,32 @@ watch(
           <div class="resume-form-section">
             <!-- 基本信息 -->
             <h4 class="section-title">基本信息</h4>
+            
+            <!-- 证件照上传 -->
+            <div class="field-group photo-upload-group">
+              <label>证件照</label>
+              <div class="photo-upload-area" :class="{ 'has-error': photoError }">
+                <img v-if="resumeFormData.basics.photo" :src="resumeFormData.basics.photo" class="photo-preview" />
+                <div v-else class="photo-placeholder" @click="$refs.photoInput.click()">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                  <span>点击上传证件照</span>
+                  <small>（1寸照片，不超过2MB）</small>
+                </div>
+                <input 
+                  ref="photoInput"
+                  type="file" 
+                  accept="image/jpeg,image/png"
+                  @change="handlePhotoUpload"
+                  class="photo-input" 
+                />
+                <button v-if="resumeFormData.basics.photo" @click="removePhoto" class="remove-photo-btn">×</button>
+              </div>
+              <div v-if="photoError" class="photo-error">{{ photoError }}</div>
+            </div>
+            
             <div class="form-grid">
               <div class="field-group">
                 <label>姓名</label>
@@ -2084,10 +3326,10 @@ watch(
   background-color: rgb(249, 245, 242);
   color: var(--text-primary);
   box-shadow: none;
-  border-bottom: 1px solid #303030;
+  border-bottom: 1px solid #e0e0e0;
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 9999;
   margin: 0;
 }
 
@@ -2107,9 +3349,89 @@ watch(
   align-items: center;
 }
 
+.app-header h1 a {
+  display: block;
+}
+
 .app-logo {
   height: 26px;
   width: auto;
+}
+
+.header-contact {
+  position: relative;
+}
+
+.contact-link {
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #666;
+  cursor: pointer;
+  transition: color 0.2s;
+  margin-right: 1.5rem;
+}
+
+.contact-link:hover {
+  color: #d97706;
+}
+
+.contact-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1rem;
+  background: white;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s ease;
+  z-index: 9999;
+  text-align: center;
+  min-width: 200px;
+}
+
+.contact-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 6px solid white;
+}
+
+.header-contact:hover .contact-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.tooltip-text {
+  font-family: 'PingFang SC', 'Noto Sans SC', sans-serif;
+  font-size: 0.8125rem;
+  color: #303030;
+  margin: 0 0 0.5rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.tooltip-text:last-of-type {
+  margin-bottom: 0.75rem;
+}
+
+.wechat-qr {
+  width: 160px;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+  border-radius: 4px;
 }
 
 .header-info {
@@ -2253,7 +3575,7 @@ watch(
   padding: 0;
   overflow: hidden;
   position: relative;
-  border-right: 1px solid #303030;
+  border-right: 1px solid #e0e0e0;
   height: 100%; /* 确保高度填满 */
 }
 
@@ -2290,6 +3612,7 @@ watch(
   overflow: hidden;
   padding: 0;
   background-color: transparent;
+  position: relative;
 }
 
 .messages-container {
@@ -2303,6 +3626,63 @@ watch(
   max-width: 1200px;
   margin: 0 auto;
   font-size: 14px; /* 聊天区域字体缩小，避免内容太拥挤 */
+}
+
+/* 滑动至底部按钮 */
+.scroll-to-bottom-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(224, 224, 224, 0.8);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  transition: all 0.2s ease;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.scroll-to-bottom-btn:hover {
+  background: rgba(255, 255, 255, 0.95);
+  color: #333;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%) translateY(-2px);
+}
+
+.scroll-to-bottom-btn:active {
+  transform: translateX(-50%) translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.scroll-to-bottom-btn svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2;
+}
+
+.scroll-arrow {
+  font-size: 20px;
+  color: #666;
+  line-height: 1;
+}
+
+/* 按钮淡入淡出动画 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .floating-input-container {
@@ -2896,6 +4276,88 @@ watch(
   transform: scale(0.95);
 }
 
+/* ==================== 翻译确认弹窗样式 ==================== */
+.translate-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.translate-dialog {
+  background-color: rgb(254, 253, 251);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='3.0' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-repeat: repeat;
+  border: 1px solid #303030;
+  border-radius: 0;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: none;
+}
+
+.translate-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #303030;
+  background-color: transparent;
+}
+
+.translate-dialog .dialog-header h3 {
+  font-size: 0.875rem;
+  font-weight: 400;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  color: #303030;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+.translate-dialog .dialog-body {
+  padding: 1.5rem;
+}
+
+.translate-dialog .dialog-body p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #303030;
+  line-height: 1.6;
+}
+
+.translate-dialog .dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid #303030;
+}
+
+.translate-dialog .confirm-btn {
+  background: #303030;
+  color: #f8bebe;
+  border: 1px solid #303030;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.translate-dialog .confirm-btn:hover {
+  background: #4a4a4a;
+}
+
 /* ==================== JD上传弹窗样式（新增） ==================== */
 .jd-dialog-overlay {
   position: fixed;
@@ -3018,6 +4480,16 @@ watch(
   border-radius: 0;
   margin-top: 0.5rem;
   border: 1px solid #303030;
+}
+
+.jd-input-section .image-tip {
+  font-size: 0.875rem;
+  color: #666;
+  margin-top: 0.75rem;
+  line-height: 1.5;
+  padding: 0.5rem;
+  background: rgba(48, 48, 48, 0.04);
+  border-left: 2px solid #f8bebe;
 }
 
 .remove-image-btn {
@@ -3294,6 +4766,103 @@ watch(
 
 .tags-input .tag-remove:hover {
   color: var(--error-color);
+}
+
+/* 证件照上传样式 */
+.photo-upload-group {
+  grid-column: 1 / -1;
+  margin-bottom: 1rem;
+}
+
+.photo-upload-area {
+  width: 80px;
+  height: 100px;
+  border: 2px dashed #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.photo-upload-area:hover {
+  border-color: #999;
+  background-color: #f5f5f5;
+}
+
+.photo-upload-area.has-error {
+  border-color: #dc3545;
+}
+
+.photo-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #999;
+  font-size: 10px;
+  text-align: center;
+  padding: 6px;
+}
+
+.photo-placeholder svg {
+  width: 24px;
+  height: 24px;
+  color: #ccc;
+}
+
+.photo-placeholder small {
+  display: none;
+}
+
+.photo-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photo-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.remove-photo-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.6);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.2s ease;
+  padding: 0;
+}
+
+.remove-photo-btn:hover {
+  background: rgba(0,0,0,0.7);
+}
+
+.photo-error {
+  color: #dc3545;
+  font-size: 12px;
+  margin-top: 4px;
 }
 
 .tags-input .tag-input {
@@ -3859,5 +5428,206 @@ watch(
   min-height: 100px;
   max-height: 200px;
   font-size: 0.85rem;
+}
+
+/* ==================== 移动端响应式布局 ==================== */
+@media (max-width: 1199px) {
+  /* 主内容区域 */
+  .main-content {
+    flex-direction: column;
+    height: calc(100vh - 48px);
+    overflow: hidden;
+  }
+
+  .chat-section,
+  .resume-section {
+    flex: none;
+    width: 100%;
+    height: 100%;
+    border-right: none;
+  }
+
+  /* 移动端聊天视图 */
+  .mobile-chat-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    background-color: rgb(254, 253, 251); /* 与PC端聊天区域背景色一致 */
+    padding-bottom: 60px; /* 为底部导航栏留出空间 */
+    position: relative;
+  }
+
+  .mobile-chat-view .chat-container {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-chat-view .messages-container {
+    flex: 1;
+    padding: 1rem;
+    font-size: 14px;
+  }
+
+  /* 移动端输入区域 */
+  .floating-input-container.mobile-input {
+    padding: 12px 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0));
+    background: #f9f5f0;
+    border-top: 1px solid #e0e0e0;
+    flex-shrink: 0;
+  }
+
+  .mobile-input .textarea-container {
+    background-color: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+  }
+
+  .mobile-input .textarea-container textarea {
+    min-height: 48px;
+    padding: 14px;
+    font-size: 16px;
+  }
+
+  .mobile-toolbar {
+    height: 52px;
+    padding: 0 4px;
+  }
+
+  .mobile-toolbar .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .mobile-toolbar .send-btn-placeholder {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* 移动端简历视图 */
+  .mobile-resume-view {
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 60px; /* 为底部导航栏留出空间 */
+  }
+
+  /* 移动端设置视图 */
+  .mobile-settings-view {
+    padding: 2rem 1.5rem;
+    overflow-y: auto;
+  }
+
+  .settings-content {
+    max-width: 400px;
+    margin: 0 auto;
+  }
+
+  .settings-content h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1.5rem;
+    font-weight: 600;
+  }
+
+  .settings-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 0;
+    border-bottom: 1px solid #e0e0e0;
+  }
+
+  .settings-value {
+    color: #666;
+    font-size: 0.875rem;
+  }
+
+  .settings-logout {
+    width: 100%;
+    margin-top: 2rem;
+    padding: 0.875rem;
+    font-size: 0.875rem;
+  }
+
+  /* Tab 内容切换动画 */
+  .tab-content-enter-active,
+  .tab-content-leave-active {
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .tab-content-enter-from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+
+  .tab-content-leave-to {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+
+  .tab-content-enter-to,
+  .tab-content-leave-from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  /* 上传文件区域适配 */
+  .uploaded-files {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .file-thumbnail {
+    padding: 6px;
+  }
+
+  .file-name {
+    font-size: 11px;
+    max-width: 80px;
+  }
+}
+
+/* 小屏幕适配 */
+@media (max-width: 480px) {
+  .mobile-tab-bar {
+    height: 56px;
+  }
+
+  .mobile-tab-label {
+    font-size: 10px;
+  }
+
+  .mobile-tab-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .floating-input-container.mobile-input {
+    padding: 10px 12px;
+  }
+
+  .mobile-input .textarea-container textarea {
+    padding: 12px;
+    font-size: 15px;
+  }
+
+  .mobile-toolbar .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .mobile-toolbar .send-btn-placeholder {
+    width: 40px;
+    height: 40px;
+  }
+
+  .messages-container {
+    padding: 0.75rem;
+    font-size: 13px;
+  }
 }
 </style>

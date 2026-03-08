@@ -42,6 +42,8 @@ class Resume(Base):
     user_id = Column(Integer, nullable=False, index=True)
     name = Column(String(100), default="默认简历")
     resume_data = Column(JSON, default=dict)
+    photo = Column(Text, default="")
+    parsing_status = Column(String(20), default="none")  # none, parsing, completed, failed
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -66,6 +68,7 @@ class Conversation(Base):
     session_id = Column(String(36), nullable=False)
     messages = Column(JSON, default=list)  # 完整的聊天历史
     compressed_context = Column(JSON, default=list)  # 压缩后的上下文（用于性能）
+    pending_confirmation = Column(JSON, default=None)  # 待确认状态
     last_accessed = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -114,17 +117,71 @@ def get_user_resume(db, user_id: int) -> dict:
     return resume.resume_data if resume else {}
 
 
-def save_user_resume(db, user_id: int, data: dict, name: str = "默认简历"):
-    """保存用户简历"""
+def get_parsing_status(db, user_id: int) -> str:
+    """获取简历解析状态"""
+    try:
+        resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+        return resume.parsing_status if resume else "none"
+    except Exception:
+        # 如果表结构有问题，返回默认值
+        return "none"
+
+
+def set_parsing_status(db, user_id: int, status: str):
+    """设置简历解析状态"""
     resume = db.query(Resume).filter(Resume.user_id == user_id).first()
     if resume:
-        resume.resume_data = data
-        resume.name = name
+        resume.parsing_status = status
     else:
-        resume = Resume(user_id=user_id, resume_data=data, name=name)
+        # 如果简历不存在，先创建
+        resume = Resume(user_id=user_id, parsing_status=status)
         db.add(resume)
     db.commit()
-    return resume
+
+
+def save_user_resume(db, user_id: int, data: dict, name: str = "默认简历", photo: str = None):
+    """保存用户简历
+    
+    Args:
+        db: 数据库会话
+        user_id: 用户ID
+        data: 简历数据JSON
+        name: 简历名称
+        photo: 证件照base64编码（可选，如果为None则从data中提取）
+    """
+    print(f"[save_user_resume] 开始保存，用户ID={user_id}")
+    print(f"[save_user_resume] 传入 data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+    
+    # 先获取现有数据（用于保留原有证件照）
+    existing_resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+    existing_photo = existing_resume.photo if existing_resume and existing_resume.photo else ""
+    
+    # 提取并分离证件照
+    if photo is None:
+        photo = data.get('basics', {}).get('photo', '')
+    
+    # 如果新数据没有 photo但数据库已有 photo，保留原有证件照
+    if not photo and existing_photo:
+        photo = existing_photo
+    
+    # 从 data 中移除 photo 字段
+    if data and 'basics' in data:
+        data = {**data, 'basics': {**data.get('basics', {})}}
+        data['basics'].pop('photo', None)
+    
+    if existing_resume:
+        print(f"[save_user_resume] 现有数据存在，basics.name: {existing_resume.resume_data.get('basics', {}).get('name', 'N/A')}")
+        print(f"[save_user_resume] 新数据 basics.name: {data.get('basics', {}).get('name', 'N/A')}")
+        existing_resume.resume_data = data
+        existing_resume.name = name
+        existing_resume.photo = photo
+    else:
+        print(f"[save_user_resume] 创建新简历")
+        resume = Resume(user_id=user_id, resume_data=data, name=name, photo=photo)
+        db.add(resume)
+    db.commit()
+    print(f"[save_user_resume] 保存完成")
+    return existing_resume if existing_resume else resume
 
 
 def get_user_jd(db, user_id: int) -> dict:
@@ -197,7 +254,7 @@ def create_invite_code(db, code: str):
     return invite
 
 
-def save_conversation_context(db, user_id: int, session_id: str, compressed_context: list):
+def save_conversation_context(db, user_id: int, session_id: str, compressed_context: list, pending_confirmation: dict = None):
     """保存压缩后的上下文到数据库"""
     conv = db.query(Conversation).filter(
         Conversation.user_id == user_id,
@@ -205,17 +262,40 @@ def save_conversation_context(db, user_id: int, session_id: str, compressed_cont
     ).first()
     if conv:
         conv.compressed_context = compressed_context
+        if pending_confirmation is not None:
+            conv.pending_confirmation = pending_confirmation
         conv.last_accessed = datetime.utcnow()
     else:
         conv = Conversation(
             user_id=user_id,
             session_id=session_id,
             compressed_context=compressed_context,
+            pending_confirmation=pending_confirmation,
             messages=[]  # 初始化为空，由前端通过 /save_conversation 保存
         )
         db.add(conv)
     db.commit()
     return conv
+
+
+def get_pending_confirmation(db, user_id: int, session_id: str) -> dict:
+    """获取待确认状态"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    return conv.pending_confirmation if conv else None
+
+
+def clear_pending_confirmation(db, user_id: int, session_id: str):
+    """清除待确认状态"""
+    conv = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.session_id == session_id
+    ).first()
+    if conv:
+        conv.pending_confirmation = None
+        db.commit()
 
 
 def get_conversation_context(db, user_id: int, session_id: str) -> list:

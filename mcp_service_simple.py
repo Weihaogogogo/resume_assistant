@@ -39,7 +39,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from database import (
     init_db, get_db, create_user, get_user_by_email,
     save_user_resume, get_user_resume, save_user_jd, get_user_jd,
-    check_invite_code, use_invite_code, create_invite_code
+    check_invite_code, use_invite_code, create_invite_code,
+    get_parsing_status, set_parsing_status
 )
 from auth import (
     verify_password, get_password_hash, create_access_token,
@@ -61,8 +62,8 @@ class CompressionState:
 compression_state = CompressionState()
 
 # 上下文压缩配置
-MAX_HUMAN_MESSAGES = 15  # 最多保留多少条 HumanMessage
-KEEP_RECENT = 5  # 保留最近多少条不压缩
+MAX_HUMAN_MESSAGES = 20  # 最多保留20条HumanMessage，提早触发压缩
+KEEP_RECENT = 5  # 保留最近5条不压缩，减少上下文大小
 
 
 def wait_for_compression():
@@ -149,7 +150,7 @@ class SaveResumeRequest(BaseModel):
 # LLM 上下文压缩
 # =============================================================================
 
-async def compress_context_with_llm(messages, max_summary_length=150):
+async def compress_context_with_llm(messages, max_summary_length=1000):
     """
     使用 LLM 对早期对话进行语义压缩
     """
@@ -174,17 +175,57 @@ async def compress_context_with_llm(messages, max_summary_length=150):
         conversation_text += f"【{role}】{str(content)[:300]}\n"
 
     summary_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""你是对话摘要专家。将以下对话压缩成简洁摘要：
+        ("system", f"""
+        你是高效的对话压缩专家。你的任务是将对话压缩到指定长度，保留最有价值的关键信息与个性化信息。
 
-要求：
-1. 摘要长度：不超过{max_summary_length}个汉字
-2. 保留关键信息：用户基本信息、工作经历、教育背景、已完成的修改、当前上下文
-3. 格式：
-   [早期对话摘要]
-   - 用户信息：xxx
-   - 已完成：xxx
-   - 待完善：xxx
-   - 当前上下文：xxx
+## 压缩目标
+- 输出摘要长度：不超过{max_summary_length}个汉字（但也不要太短）
+- 每个字都要有价值
+
+## 必须保留的信息（按优先级）
+## 必须保留的信息（按优先级）
+
+1. **讨论过的话题**
+   - 用户和 AI 讨论过哪些主题/话题
+   - 每个话题的关键结论或进展
+   - 哪些话题已结束、哪些还在进行中
+
+2. **用户明确表达的要求和偏好**
+   - 用户对简历的具体修改要求
+   - 用户提到的工作偏好、城市偏好、薪资期望等
+   - 用户明确拒绝或喜欢的风格
+
+3. **用户提及的个人背景**
+   - 用户在对话中提到的额外经历、故事
+   - 用户口头补充的信息（不在简历中的）
+   - 用户的职业规划、转型原因等
+
+4. **用户的性格特点**
+   - 用户的沟通风格（简洁话唠严肃幽默等）
+   - 用户做决策的方式（犹豫果断犹豫等）
+   - 用户的特殊习惯或偏好
+
+5. **修改历史和决策**
+   - 用户确认过的修改点
+   - 用户拒绝过的建议
+   - 用户特别满意的修改
+
+6. **当前上下文**
+   - 用户当前最关心的问题
+   - 当前对话的主题
+
+## 可以丢弃的信息
+- 简历中已有的结构化信息（姓名、岗位、技能等）
+- 客套话、寒暄
+- LLM 的解释性内容
+- 重复的表达
+
+## 输出格式
+【讨论话题】列出所有讨论过的话题及关键结论
+【用户个性化信息】用户提及的个人要求、偏好、背景等
+【修改决策】确认的修改点、拒绝的建议
+【当前状态】用户当前的需求和关注点
+【重要备注】其他需要记住的个性化信息
 """),
         ("human", f"待压缩的对话：\n\n{conversation_text}")
     ])
@@ -194,6 +235,7 @@ async def compress_context_with_llm(messages, max_summary_length=150):
         summary_result = await summary_chain.ainvoke({})
         summary_content = summary_result.content.strip()
         print(f"[Context] LLM 摘要生成成功: {len(summary_content)}字")
+        print(f"[Context] 摘要内容:\n{summary_content}")
 
         summary_message = SystemMessage(content=summary_content)
         return [summary_message] + recent_messages
@@ -351,17 +393,48 @@ async def load_resume_endpoint(db: Session = Depends(get_db), current_user = Dep
     加载当前用户的简历数据
     """
     try:
-        print(f"[DEBUG] load_resume: current_user.id={current_user.id}, current_user.email={current_user.email}")
+        print(f"[load_resume] user_id={current_user.id}, email={current_user.email}")
         resume_data = get_user_resume(db, current_user.id)
-        print(f"[DEBUG] load_resume: resume_data={resume_data}")
+
+        # 打印加载的数据
+        if resume_data and isinstance(resume_data, dict):
+            basics = resume_data.get('basics', {})
+            print(f"[load_resume] 加载简历: name={basics.get('name', 'N/A')}, target_position={basics.get('target_position', 'N/A')}")
+        else:
+            print(f"[load_resume] 未找到简历数据")
+
+        # 获取证件照
+        from database import Resume
+        resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
+        photo = resume_obj.photo if resume_obj and resume_obj.photo else ""
+
+        # 将 photo 放入 resume_data 的 basics 中（保持向前兼容）
+        if resume_data and isinstance(resume_data, dict):
+            if 'basics' not in resume_data:
+                resume_data['basics'] = {}
+            resume_data['basics']['photo'] = photo
+        else:
+            resume_data = {'basics': {'photo': photo}}
+
+        # 安全获取解析状态
+        try:
+            parsing_status = get_parsing_status(db, current_user.id)
+        except Exception as statusError:
+            print(f"[WARN] get_parsing_status failed: {statusError}, using default")
+            parsing_status = "none"
+
         if isinstance(resume_data, dict) and "error" in resume_data:
             return JSONResponse(content={}, status_code=500)
-        return JSONResponse(content=resume_data)
+        return JSONResponse(content={
+            **resume_data,
+            "parsing_status": parsing_status
+        })
     except Exception as e:
         print(f"[ERROR] load_resume: {str(e)}")
         import traceback
         traceback.print_exc()
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        # 返回空简历数据，避免前端崩溃
+        return JSONResponse(content={"parsing_status": "none"}, status_code=200)
 
 
 @app.post("/save_resume")
@@ -412,6 +485,28 @@ async def save_jd_endpoint(request: Request, db: Session = Depends(get_db), curr
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
+def filter_images_from_message_dict(msg_dict):
+    """过滤消息字典中的图片内容"""
+    if not isinstance(msg_dict, dict):
+        return msg_dict
+
+    content = msg_dict.get('content', '')
+
+    # 如果 content 是列表（多模态内容），过滤掉图片
+    if isinstance(content, list):
+        filtered = []
+        for item in content:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                filtered.append(item)
+            # 跳过 type == 'image_url' 的图片
+        if filtered:
+            msg_dict['content'] = filtered
+        else:
+            msg_dict['content'] = ''
+
+    return msg_dict
+
+
 @app.post("/save_conversation")
 async def save_conversation_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
@@ -422,8 +517,11 @@ async def save_conversation_endpoint(request: Request, db: Session = Depends(get
         session_id = request_data.get('session_id', 'default')
         messages = request_data.get('messages', [])
 
+        # 过滤掉消息中的图片
+        filtered_messages = [filter_images_from_message_dict(msg) for msg in messages]
+
         from database import save_conversation
-        save_conversation(db, current_user.id, session_id, messages)
+        save_conversation(db, current_user.id, session_id, filtered_messages)
 
         return JSONResponse(content={"success": True})
     except Exception as e:
@@ -501,6 +599,99 @@ async def parse_jd_endpoint(request: Request, current_user = Depends(get_current
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
+@app.post("/api/resume/parse_and_save")
+async def parse_and_save_resume_endpoint(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    解析简历图片并保存（首次上传流程）
+    支持 multipart/form-data 上传文件
+    """
+    try:
+        import re
+
+        if not file:
+            return JSONResponse(content={"success": False, "error": "未收到文件"}, status_code=400)
+
+        # 验证文件类型
+        content_type = file.content_type
+        if not content_type.startswith('image/') and content_type != 'application/pdf':
+            return JSONResponse(content={"success": False, "error": "只支持图片或PDF文件"}, status_code=400)
+
+        # 读取文件内容并转换为base64
+        file_content = await file.read()
+        base64_content = base64.b64encode(file_content).decode('utf-8')
+
+        # 根据文件类型设置MIME类型
+        if content_type == 'application/pdf':
+            mime_type = 'application/pdf'
+        elif content_type == 'image/png':
+            mime_type = 'image/png'
+        elif content_type == 'image/webp':
+            mime_type = 'image/webp'
+        else:
+            mime_type = 'image/jpeg'
+
+        from resume_agent import jd_parser_llm, RESUME_FULL_EXTRACT_PROMPT
+
+        # 设置解析状态为进行中
+        set_parsing_status(db, current_user.id, "parsing")
+
+        # 构建消息 - 使用base64数据URL
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": "请完整提取这份简历中的所有信息，**不要省略任何内容**。"},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_content}"}}
+            ]
+        )
+
+        # 调用 LLM 解析
+        response = await jd_parser_llm.ainvoke([
+            SystemMessage(content=RESUME_FULL_EXTRACT_PROMPT),
+            message
+        ])
+
+        # 清理 JSON
+        content = response.content.strip()
+        content = re.sub(r'^```json\s*', '', content)
+        content = re.sub(r'^```\s*', '', content)
+        content = re.sub(r'\s*```$', '', content)
+
+        try:
+            resume_data = json.loads(content)
+        except json.JSONDecodeError:
+            # 解析失败
+            set_parsing_status(db, current_user.id, "failed")
+            return JSONResponse(content={"success": False, "error": "解析失败", "raw": content}, status_code=500)
+
+        # 保存到数据库
+        from database import save_user_resume
+        save_user_resume(db, current_user.id, resume_data)
+        # 设置解析状态为完成
+        set_parsing_status(db, current_user.id, "completed")
+
+        return JSONResponse(content={
+            "success": True,
+            "resume_data": resume_data,
+            "message": "简历解析并保存成功"
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # 解析失败
+        set_parsing_status(db, current_user.id, "failed")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/resume/parsing_status")
+async def get_parsing_status_endpoint(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+    """获取简历解析状态"""
+    status = get_parsing_status(db, current_user.id)
+    return {"parsing_status": status}
+
+
 @app.post("/export_pdf")
 async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
@@ -513,14 +704,20 @@ async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), c
         except Exception:
             request_data = {}
         style = request_data.get('style', {})
+        lang = request_data.get('lang', 'zh')  # 默认中文
 
         # 从数据库获取简历
         resume_data = get_user_resume(db, current_user.id)
         if not resume_data:
             return JSONResponse(content="错误: 没有找到简历数据，请先创建或加载简历", status_code=400)
 
+        # 从数据库获取证件照
+        from database import Resume
+        resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
+        photo = resume_obj.photo if resume_obj and resume_obj.photo else None
+
         generate_pdf = get_pdf_generator()
-        pdf_bytes = generate_pdf(resume_data, style)
+        pdf_bytes = generate_pdf(resume_data, style, photo, lang)
 
         return StreamingResponse(
             iter([pdf_bytes]),
@@ -553,6 +750,9 @@ async def chat_endpoint(
         # 生成会话 ID
         if not session_id:
             session_id = generate_session_id()
+
+        # 构建 graph 配置（用于状态追踪）
+        config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
 
         # 检测用户是否点击了确认按钮（必须在使用 message 之前）
         is_confirm_click = '[CONFIRM_REPLY:' in message.strip()
@@ -596,198 +796,105 @@ async def chat_endpoint(
             # 只有文本
             current_message = HumanMessage(content=message.strip())
 
-        # 从数据库获取压缩后的上下文
+        # 从数据库获取压缩后的上下文（这是唯一的消息来源）
         from database import get_conversation_context
         db_context_raw = get_conversation_context(db, current_user.id, session_id)
 
-        # 只提取 HumanMessage，过滤掉 ToolMessage 和 AIMessage
-        db_context = []
+        # 转换数据库中的消息为 Message 对象
+        historical_messages = []
         for msg_dict in db_context_raw:
-            msg_type = msg_dict.get("type", "")
+            msg_type = msg_dict.get("type", "").lower()
+            content = msg_dict.get("content", "")
+            tool_calls = msg_dict.get("tool_calls", [])
+            if tool_calls:
+                continue
             if msg_type == "human":
-                content = msg_dict.get("content", "")
-                db_context.append(HumanMessage(content=content))
+                historical_messages.append(HumanMessage(content=content))
+            elif msg_type == "ai":
+                historical_messages.append(AIMessage(content=content))
+            elif msg_type == "system" or msg_type == "systemmessage":
+                historical_messages.append(SystemMessage(content=content))
 
-        # 从 checkpointer 获取历史消息
-        # 在 config 中包含 user_id，确保每个用户的状态隔离
-        config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
-        print(f"[DEBUG] config: {config}")
-        try:
-            saved_state = graph.get_state(config)
-            print(f"[DEBUG] saved_state: {saved_state}")
-            print(f"[DEBUG] saved_state.values: {saved_state.values if saved_state else None}")
+        # 构建 all_messages：数据库中的历史消息 + 当前用户消息
+        all_messages = list(historical_messages) + [current_message]
+        print(f"[InitState] 从数据库加载 {len(historical_messages)} 条历史消息 + 当前消息")
 
-            if saved_state and saved_state.values:
-                saved_messages = saved_state.values.get("messages", [])
-                print(f"[DEBUG] saved_messages count: {len(saved_messages)}")
-                for i, msg in enumerate(saved_messages):
-                    print(f"  [DEBUG] saved_msg[{i}]: {type(msg).__name__}: {str(getattr(msg, 'content', ''))[:50]}...")
-                saved_messages = saved_state.values.get("messages", [])
+        # 使用数据库中的数据
+        initial_resume_data = resume_data if resume_data else (get_user_resume(db, current_user.id) or {})
+        initial_jd_data = jd_data if jd_data else (get_user_jd(db, current_user.id) or {})
 
-                # 只保留 HumanMessage 和 AIMessage，过滤掉 ToolMessage
-                filtered_messages = []
-                for msg in saved_messages:
-                    if isinstance(msg, ToolMessage):
-                        # 跳过 ToolMessage
-                        continue
-                    else:
-                        filtered_messages.append(msg)
-
-                # 只使用 checkpointer 中的 HumanMessage（这是上一轮处理后的结果）
-                if filtered_messages:
-                    historical_messages = filtered_messages
-                    print(f"[DEBUG] 使用 checkpointer 历史消息: {len(historical_messages)} 条")
-                elif db_context:
-                    # 如果 checkpointer 为空，使用数据库中的 HumanMessage
-                    historical_messages = db_context
-                    print(f"[DEBUG] 使用 db_context 历史消息: {len(historical_messages)} 条")
-                else:
-                    historical_messages = []
-                    print(f"[DEBUG] 无历史消息")
-
-                # 构建 all_messages：历史 HumanMessage + 当前 HumanMessage
-                all_messages = list(historical_messages) + [current_message]
-                print(f"[DEBUG] all_messages 构建完成: {len(all_messages)} 条")
-                for i, msg in enumerate(all_messages):
-                    print(f"  [DEBUG] all_msg[{i}]: {type(msg).__name__}: {str(getattr(msg, 'content', ''))[:50]}...")
-
-                # 优先使用数据库中的数据
-                initial_resume_data = resume_data if resume_data else saved_state.values.get("resume_data", {})
-                initial_jd_data = jd_data if jd_data else saved_state.values.get("jd_data", {})
-            else:
-                # checkpointer 为空，从数据库加载
-                if db_context:
-                    all_messages = list(db_context) + [current_message]
-                else:
-                    all_messages = [current_message]
-                initial_resume_data = resume_data or {}
-                initial_jd_data = jd_data or {}
-        except Exception as e:
-            # 异常情况下从数据库加载
-            if db_context:
-                all_messages = list(db_context) + [current_message]
-            else:
-                all_messages = [current_message]
-            initial_resume_data = resume_data or {}
-            initial_jd_data = jd_data or {}
+        # 从数据库获取待确认状态
+        from database import get_pending_confirmation
+        initial_pending_confirmation = get_pending_confirmation(db, current_user.id, session_id)
+        if initial_pending_confirmation:
+            print(f"[InitState] 从数据库加载 pending_confirmation: confirm_id={initial_pending_confirmation.get('confirm_id')}")
+        else:
+            print(f"[InitState] 从数据库加载 pending_confirmation: None")
 
         # 创建初始状态
-        # 用户点击确认时：清除 pending_confirmation，从 formatter_llm 开始
         # 注意：当用户点击确认时，initial_state 包含完整的消息历史
         # 这样 tool_node 和 conversation_llm 才能正确访问上下文
         initial_state = {
             "messages": all_messages,  # 保留完整的历史消息
             "resume_data": initial_resume_data,
             "jd_data": initial_jd_data,
-            "pending_confirmation": None,  # 用户点击确认时清除 pending_confirmation
+            "pending_confirmation": initial_pending_confirmation,  # 从数据库加载待确认状态
             "user_id": current_user.id  # 添加用户ID，用于数据隔离
         }
-        print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息")
+        print(f"[InitState] initial_state 创建完成: {len(all_messages)} 条消息, pending_confirmation={initial_state.get('pending_confirmation') is not None}")
         for i, msg in enumerate(all_messages):
             print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
 
-        async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, has_pending_confirmation, config):
+        def filter_images_from_content(content):
+            """过滤消息内容中的图片，只保留文本"""
+            if isinstance(content, list):
+                # 过滤掉图片，只保留文本
+                filtered = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            filtered.append(item)
+                        # 跳过 type == "image_url" 的图片
+                return filtered if filtered else ""
+            return content
+
+        def filter_images_from_message(msg):
+            """过滤消息中的图片内容"""
+            content = getattr(msg, 'content', '')
+            filtered_content = filter_images_from_content(content)
+
+            # 创建新的消息对象，只包含过滤后的内容
+            if isinstance(msg, HumanMessage):
+                return HumanMessage(content=filtered_content)
+            elif isinstance(msg, AIMessage):
+                return AIMessage(content=filtered_content)
+            elif isinstance(msg, SystemMessage):
+                return SystemMessage(content=filtered_content)
+            return msg
+
+        async def save_state_async(db, user_id, session_id, messages_list, resume_data_result, initial_jd_data, pending_confirmation=None):
             """异步保存状态到数据库，不阻塞 SSE 响应"""
             try:
-                # 注意：不再使用 messages_list，因为它可能包含重复消息
-                # 只依赖 checkpointer 来获取消息历史
-                print(f"[SaveStateAsync] 开始保存状态")
-                
-                # 从 checkpointer 获取当前状态
-                current_state = graph.get_state(config)
-                existing_messages = []
-                if current_state and current_state.values:
-                    existing_messages = current_state.values.get("messages", [])
-                    print(f"[SaveState] checkpointer 中已有: {len(existing_messages)} 条消息")
-                    for i, msg in enumerate(existing_messages):
-                        tc = getattr(msg, 'tool_calls', [])
-                        tc_names = [t.get('name') if isinstance(t, dict) else getattr(t, 'name', None) for t in tc]
-                        print(f"  [{i}] {type(msg).__name__}: tool_calls={tc_names}")
-                
-                # 从数据库获取已有的 HumanMessage（用于增量保存）
-                from database import get_conversation_context
-                db_context_raw = get_conversation_context(db, user_id, session_id)
-                db_human_contents = set()
-                for msg_dict in db_context_raw:
-                    if msg_dict.get("type") == "human":
-                        content = msg_dict.get("content", "")
-                        if isinstance(content, list):
-                            content = str(content)
-                        db_human_contents.add(content)
-                
-                # 构建去重映射（使用内容+类型作为key）
-                existing_map = {}
-                for msg in existing_messages:
-                    if isinstance(msg, ToolMessage):
-                        continue  # 不保存 ToolMessage
-                    content = getattr(msg, 'content', '')
-                    if isinstance(content, list):
-                        content = str(content)
-                    key = (str(content), type(msg).__name__)
-                    existing_map[key] = msg
-                
-                # 只添加不在已有历史中的新消息
-                new_messages_added = []
-                for msg in existing_messages:
-                    if isinstance(msg, ToolMessage):
-                        continue
-                    content = getattr(msg, 'content', '')
-                    if isinstance(content, list):
-                        content = str(content)
-                    key = (str(content), type(msg).__name__)
-                    if key not in existing_map:
-                        new_messages_added.append(msg)
-                        existing_map[key] = msg
-                        print(f"[SaveState] 添加新消息: {type(msg).__name__}: {str(content)[:50]}...")
-                
-                # 合并：历史消息 + 新消息（保持 Human -> AI 的顺序）
-                all_human = [msg for msg in existing_messages if isinstance(msg, HumanMessage)]
-                all_human.extend([msg for msg in new_messages_added if isinstance(msg, HumanMessage)])
-                
-                all_ai = [msg for msg in existing_messages if isinstance(msg, AIMessage)]
-                all_ai.extend([msg for msg in new_messages_added if isinstance(msg, AIMessage)])
-                
-                # 保持正确的顺序：Human -> AI
-                messages_to_save = all_human + all_ai
-                
-                # 提取最后一条 AIMessage 用于上下文压缩
+                if pending_confirmation:
+                    print(f"[SaveStateAsync] 开始保存状态, confirm_id={pending_confirmation.get('confirm_id')}")
+                else:
+                    print(f"[SaveStateAsync] 开始保存状态, pending_confirmation=None")
+
+                # 过滤掉消息中的图片
+                filtered_messages_list = [filter_images_from_message(msg) for msg in messages_list]
+
+                # 从 filtered_messages_list 中提取 HumanMessage 和 AIMessage（跳过 ToolMessage）
+                all_human = [msg for msg in filtered_messages_list if isinstance(msg, HumanMessage)]
+                all_ai = [msg for msg in filtered_messages_list if isinstance(msg, AIMessage)]
+
+                # 提取最后一条 AIMessage
                 new_ai = all_ai[-1] if all_ai else None
-                
-                # 确定 final_resume_data 和 final_jd_data
+
+                # 确定最终数据
                 final_resume_data = resume_data_result if resume_data_result else {}
                 final_jd_data = initial_jd_data if initial_jd_data else {}
-                
-                # 确定 pending_confirmation 状态
-                if has_pending_confirmation:
-                    current_pending = None
-                    if current_state and current_state.values:
-                        current_pending = current_state.values.get("pending_confirmation")
-                else:
-                    current_pending = None
-                
-                print(f"[SaveState] 保存 checkpointer: {len(messages_to_save)} total messages (Human: {len(all_human)}, AI: {len(all_ai)})")
-                for i, msg in enumerate(messages_to_save):
-                    print(f"  [{i}] {type(msg).__name__}: {str(getattr(msg, 'content', ''))[:50]}...")
 
-                # 更新 checkpointer 之前，先获取当前状态
-                before_update = graph.get_state(config)
-                print(f"[SaveState] update 前 checkpointer: {len(before_update.values.get('messages', [])) if before_update and before_update.values else 0} messages")
-
-                graph.update_state(
-                    config,
-                    {
-                        "messages": messages_to_save,
-                        "resume_data": final_resume_data,
-                        "jd_data": final_jd_data,
-                        "pending_confirmation": current_pending
-                    }
-                )
-
-                # 更新后立即读取验证
-                after_update = graph.get_state(config)
-                print(f"[SaveState] update 后 checkpointer: {len(after_update.values.get('messages', [])) if after_update and after_update.values else 0} messages")
-                for i, msg in enumerate(after_update.values.get('messages', []) if after_update and after_update.values else []):
-                    print(f"  {i}: {type(msg).__name__}: {getattr(msg, 'content', '')[:30]}...")
+                print(f"[SaveState] 待保存: {len(all_human)} HumanMessage, {len(all_ai)} AIMessage, pending_confirmation={pending_confirmation is not None}")
 
                 # 保存到数据库
                 if final_resume_data:
@@ -798,35 +905,26 @@ async def chat_endpoint(
                 # 保存上下文（带压缩逻辑）
                 from database import save_conversation_context
 
-                # 1. 构建压缩上下文（只保存 HumanMessage + 最后一条 AIMessage）
+                # 1. 构建压缩上下文（按原始顺序保存 HumanMessage 和 AIMessage）
                 compressed_context = []
-                for msg in all_human:
-                    if hasattr(msg, 'model_dump'):
-                        compressed_context.append({**msg.model_dump(), "type": "human"})
-                    else:
-                        compressed_context.append({**dict(msg), "type": "human"})
-                if new_ai:
-                    if hasattr(new_ai, 'model_dump'):
-                        compressed_context.append({**new_ai.model_dump(), "type": "ai"})
-                    else:
-                        compressed_context.append({**dict(new_ai), "type": "ai"})
-
-                # 2. 构建完整历史（用于前端显示，包含 HumanMessage + AIMessage）
-                # 注意：只使用 messages_to_save（来自 checkpointer），避免 messages_list 的重复问题
-                full_history = []
-                for msg in messages_to_save:
+                for msg in filtered_messages_list:
                     if isinstance(msg, HumanMessage):
                         if hasattr(msg, 'model_dump'):
-                            full_history.append({**msg.model_dump(), "type": "human"})
+                            compressed_context.append({**msg.model_dump(), "type": "human"})
                         else:
-                            full_history.append({**dict(msg), "type": "human"})
-                    elif isinstance(msg, AIMessage) and msg.content:
+                            compressed_context.append({**dict(msg), "type": "human"})
+                    elif isinstance(msg, AIMessage):
                         if hasattr(msg, 'model_dump'):
-                            full_history.append({**msg.model_dump(), "type": "ai"})
+                            compressed_context.append({**msg.model_dump(), "type": "ai"})
                         else:
-                            full_history.append({**dict(msg), "type": "ai"})
+                            compressed_context.append({**dict(msg), "type": "ai"})
+                    elif isinstance(msg, SystemMessage):
+                        if hasattr(msg, 'model_dump'):
+                            compressed_context.append({**msg.model_dump(), "type": "system"})
+                        else:
+                            compressed_context.append({**dict(msg), "type": "system"})
 
-                # 3. 检查是否需要压缩
+                # 检查是否需要压缩
                 if len(all_human) > MAX_HUMAN_MESSAGES:
                     # 设置压缩状态
                     compression_state.compressing = True
@@ -867,9 +965,8 @@ async def chat_endpoint(
                         # 通知压缩完成
                         notify_compression_complete()
 
-                # 4. 保存到数据库（只保存 compressed_context，不保存 full_history 到 messages 字段）
-                # full_history 由前端通过 /save_conversation 端点保存
-                save_conversation_context(db, user_id, session_id, compressed_context)
+                # 保存到数据库
+                save_conversation_context(db, user_id, session_id, compressed_context, pending_confirmation)
 
             except Exception as e:
                 print(f"[Warning] 异步保存失败: {e}")
@@ -886,7 +983,7 @@ async def chat_endpoint(
             messages_list = list(all_messages)  # 从 initial_state 开始
             print(f"[StreamResponse] messages_list 初始化: {len(messages_list)} 条消息")
             resume_data_result = {}
-            has_pending_confirmation = False
+            pending_confirmation_result = None  # 保存待确认状态
             final_content = None
             accumulated_content = ""
             current_node = None
@@ -895,6 +992,7 @@ async def chat_endpoint(
             try:
                 # 统一使用 graph.astream_events
                 # 入口路由会在 Graph 内部处理（通过 entry_router）
+                print(f"[SSE] 开始流式处理, 消息数量: {len(initial_state.get('messages', []))}")
                 async for event in graph.astream_events(initial_state, config=config, version="v1"):
                     event_type = event.get("event", "")
                     node_name = event.get("name", "")
@@ -902,6 +1000,7 @@ async def chat_endpoint(
                     if event_type == "on_chain_start":
                         current_node = node_name
                         node_start_time[node_name] = time.time()
+                        print(f"[SSE] 节点开始: {node_name}")
 
                     if event_type == "on_chat_model_stream" and current_node == "conversation_llm":
                         chunk = event.get("data", {}).get("chunk", {})
@@ -933,12 +1032,26 @@ async def chat_endpoint(
                             continue
 
                         if node_name == "tool_node":
+                            output_data = event.get('data', {}).get('output', {})
+                            output_keys = list(output_data.keys()) if isinstance(output_data, dict) else []
+                            print(f"[SSE] tool_node output keys: {output_keys}")
                             if isinstance(event.get("data", {}).get("output"), dict):
                                 output = event["data"]["output"]
+                                print(f"[SSE] pending_confirmation in output: {output.get('pending_confirmation')}")
                                 if "pending_confirmation" in output and output["pending_confirmation"]:
-                                    has_pending_confirmation = True
                                     confirm_data = output["pending_confirmation"]
                                     confirm_msg_id = str(uuid.uuid4())
+                                    # 同步保存 pending_confirmation 到数据库，确保立即可用
+                                    try:
+                                        from database import save_conversation_context, get_conversation_context
+                                        # 先获取当前压缩上下文
+                                        current_context = get_conversation_context(db, current_user.id, session_id)
+                                        # 保存 pending_confirmation，保留当前上下文
+                                        save_conversation_context(db, current_user.id, session_id, current_context, confirm_data)
+                                        print(f"[SSE] 同步保存 pending_confirmation: confirm_id={confirm_data.get('confirm_id')}")
+                                    except Exception as e:
+                                        print(f"[Warning] 同步保存 pending_confirmation 失败: {e}")
+                                    pending_confirmation_result = confirm_data  # 保存待确认状态
                                     yield 'data: ' + json.dumps({
                                         "type": "confirm",
                                         "id": confirm_msg_id,
@@ -948,15 +1061,20 @@ async def chat_endpoint(
                                         "session_id": session_id
                                     }) + '\n\n'
                                     if "messages" in output:
-                                        messages_list.extend(output["messages"])
+                                        # 替换为最新消息，而不是追加（避免消息重复累积）
+                                        messages_list = list(output["messages"])
                                     continue
 
                         if isinstance(event.get("data", {}).get("output"), dict):
                             output = event["data"]["output"]
                             if "messages" in output:
-                                messages_list.extend(output["messages"])
+                                # 替换为最新消息，而不是追加（避免消息重复累积）
+                                messages_list = list(output["messages"])
                             if "resume_data" in output and not output.get("pending_confirmation"):
                                 resume_data_result = output["resume_data"]
+                            # 更新 pending_confirmation_result（包括 None，用于清除状态）
+                            if "pending_confirmation" in output:
+                                pending_confirmation_result = output["pending_confirmation"]
 
                 if not accumulated_content:
                     for msg in reversed(messages_list):
@@ -971,31 +1089,29 @@ async def chat_endpoint(
                     final_content = accumulated_content
 
             except Exception as e:
+                import traceback
                 print(f"[Error] 执行错误: {str(e)}")
+                print(f"[Error] 异常堆栈: {traceback.format_exc()}")
                 final_content = f"抱歉，处理请求时出错: {str(e)}"
 
             if not final_content:
                 final_content = "抱歉，我无法理解您的请求。"
 
+            print(f"[SSE] 准备发送 final 事件, pending_confirmation={pending_confirmation_result is not None}")
             yield 'data: ' + json.dumps({
                 "type": "final",
                 "content": final_content,
                 "session_id": session_id
             }) + '\n\n'
 
-            # 将用户消息添加到 messages_list（用户消息在 initial_state 的最后）
-            if initial_state.get("messages"):
-                user_message = initial_state["messages"][-1]
-                if isinstance(user_message, HumanMessage):
-                    messages_list = [user_message] + messages_list
-
-            # 保存消息到 checkpointer 和数据库（异步执行，不阻塞 SSE 响应）
+            # 保存消息到数据库（异步执行，不阻塞 SSE 响应）
             import asyncio
             asyncio.create_task(save_state_async(
                 db, current_user.id, session_id,
-                messages_list, resume_data_result, initial_jd_data, has_pending_confirmation, config
+                messages_list, resume_data_result, initial_jd_data, pending_confirmation_result
             ))
 
+            print(f"[SSE] 准备发送 end 事件")
             yield 'data: ' + json.dumps({"type": "end", "session_id": session_id}) + '\n\n'
 
         return StreamingResponse(stream_response(config), media_type="text/event-stream")
@@ -1025,19 +1141,10 @@ async def confirm_endpoint(
         import resume_agent
         resume_agent.current_user_id = current_user.id
 
-        # 获取当前状态，使用包含 user_id 的 config
-        config = {"configurable": {"thread_id": f"user_{current_user.id}_session_{session_id}"}}
-        saved_state = graph.get_state(config)
+        # 从数据库获取 pending_confirmation
+        from database import get_pending_confirmation, clear_pending_confirmation, get_user_resume
+        pending_confirmation = get_pending_confirmation(db, current_user.id, session_id)
 
-        if not saved_state or not saved_state.values:
-            return JSONResponse(content={"error": "会话不存在"}, status_code=404)
-
-        state = saved_state.values
-        messages = state.get("messages", [])
-        resume_data = state.get("resume_data", {})
-
-        # 检查 pending_confirmation
-        pending_confirmation = state.get("pending_confirmation", None)
         if not pending_confirmation:
             return JSONResponse(content={"error": "没有待确认的操作"}, status_code=400)
 
@@ -1046,19 +1153,28 @@ async def confirm_endpoint(
 
         # 根据操作处理
         if action == "confirm":
-            # 保存简历
-            from tools import update_resume
-            result = update_resume(resume_data, user_id=current_user.id)
+            # 从 pending_confirmation 获取修改后的简历数据
+            tool_args = pending_confirmation.get("tool_args", {})
+            content = tool_args.get("content", "")
 
-            # 保存到数据库
-            save_user_resume(db, current_user.id, resume_data)
+            if not content:
+                return JSONResponse(content={"error": "没有找到修改后的简历数据"}, status_code=400)
+
+            # 解析 JSON
+            import json as json_module
+            try:
+                updated_resume_data = json_module.loads(content)
+                print(f"[Confirm] 解析修改后的简历数据成功，包含 {len(updated_resume_data)} 个顶级字段")
+            except json_module.JSONDecodeError as e:
+                return JSONResponse(content={"error": f"简历数据格式错误: {str(e)}"}, status_code=400)
+
+            # 保存修改后的简历数据
+            from tools import update_resume
+            result = update_resume(updated_resume_data, user_id=current_user.id)
+            print(f"[Confirm] 保存结果: {result}")
 
             # 清除 pending_confirmation 状态
-            graph.update_state(config, {
-                "resume_data": resume_data,
-                "jd_data": state.get("jd_data", {}),
-                "pending_confirmation": None
-            })
+            clear_pending_confirmation(db, current_user.id, session_id)
 
             return JSONResponse(content={
                 "success": True,
@@ -1067,23 +1183,8 @@ async def confirm_endpoint(
             })
 
         else:
-            # 取消 - 清除状态和临时消息
-            # 过滤掉 pending 期间添加的临时 ToolMessage（ask_confirmation 相关的）
-            cleaned_messages = []
-            for msg in messages:
-                if isinstance(msg, ToolMessage):
-                    # 保留有 name 的 ToolMessage，过滤掉临时消息
-                    if getattr(msg, 'name', None) and '等待确认' not in str(msg.content):
-                        cleaned_messages.append(msg)
-                else:
-                    cleaned_messages.append(msg)
-
-            graph.update_state(config, {
-                "messages": cleaned_messages,
-                "resume_data": resume_data,
-                "jd_data": state.get("jd_data", {}),
-                "pending_confirmation": None
-            })
+            # 取消 - 清除 pending_confirmation 状态
+            clear_pending_confirmation(db, current_user.id, session_id)
 
             return JSONResponse(content={
                 "success": True,
@@ -1093,6 +1194,303 @@ async def confirm_endpoint(
 
     except Exception as e:
         print(f"确认接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+
+# =============================================================================
+# 首次提问 Prompt 模板
+# =============================================================================
+
+FIRST_MESSAGE_FOR_CUSTOM_IDENTITY_PROMPT = """
+# 角色
+你是资深职业顾问，擅长通过对话了解用户的背景并帮助他们打造专业简历。
+
+# 任务
+根据用户描述的身份信息，生成 2-4 个针对性的首次提问，帮助开始建立简历。
+
+# 用户身份描述
+{custom_identity}
+
+# 分析要点
+用户可能描述的身份类型包括但不限于：
+- 应届生但非典型毕业时间（如间隔年、创业后回归职场）
+- 有工作经验但非标准职场路径（如自由职业、间歇性工作）
+- 转行者（如从技术转产品、从医疗转互联网）
+- 海归/归国人员
+- 其他非标准身份
+
+# 提问原则
+1. 基于用户描述的身份信息，理解其独特背景
+2. 提问要自然、友好，像朋友聊天一样
+3. 关注用户尚未提及但建立简历所需的关键信息
+4. 问题要具体，不要太泛泛
+5. 适当回应用户描述的身份，表达理解
+6. 通用问题方向（根据用户身份调整）：
+   - 当前状态/最近在做什么
+   - 目标岗位/职业方向
+   - 核心技能/优势
+   - 项目/工作经历
+   - 教育背景
+
+# 输出格式
+开场先简短回应用户的身份描述，表达理解。
+然后列出 2-4 个问题，对关键信息使用 Markdown 加粗语法。
+在所有问题之后，添加一行友好的引导语，例如：
+"💡 你可以先选择一个最想聊的告诉我，比如：'我想先说说我的**项目经历**' 或 '先回答我关于**第三个问题**'"
+用自然的口语化表达，不要太正式。
+不要输出 JSON，不要有任何前缀。
+"""
+
+FIRST_MESSAGE_FROM_RESUME_PROMPT = """
+# 角色
+你是资深职业顾问，擅长通过对话挖掘用户的职业经历和优势。
+
+# 任务
+根据用户已解析的简历内容，生成 2-4 个针对性的首次提问，帮助完善简历。
+
+# 简历数据
+{resume_data}
+
+# 要求
+1. 首先分析简历中的关键信息：
+   - 目标岗位（target_position）
+   - 教育背景（education）
+   - 工作经历（work_experience）
+   - 项目经历（project_experience）
+   - 技能（skills）
+   - 自我评价（self_evaluation）
+   - 其他信息（others）
+
+2. 提问原则：
+   - 挖掘简历中缺失或描述不完整的重要信息
+   - 针对简历中的亮点进行深入了解
+   - 提问要有针对性，不能是泛泛的问题
+   - 每个问题都要有明确的信息挖掘目标
+
+3. 提问数量：2-4 个问题
+
+4. 提问示例（根据简历内容调整）：
+   - 如果缺少项目细节："我看到你提到了[项目名]，能详细说说你在其中担任什么角色、遇到的最大挑战是什么吗？"
+   - 如果缺少量化数据："你提到[工作/项目]提升了效率，能具体说说提升了多少吗？"
+   - 如果缺少技能应用："你掌握了[技能]，有没有实际应用这个技能解决问题的经历？"
+
+# 输出格式
+直接输出提问内容，用自然的口语化表达。
+对关键信息使用 Markdown 加粗语法（如 **专业**、**项目** 等）。
+
+在所有问题之后，添加一行友好的引导语，例如：
+"💡 你可以先选择一个最想聊的告诉我，比如：'我想先说说我的**项目经历**' 或 '先回答我关于**第三个问题**'"
+不要输出 JSON，不要有任何前缀。
+"""
+
+
+class FirstMessageRequest(BaseModel):
+    user_type: str
+    custom_identity: str
+    session_id: str = ""
+
+@app.post("/api/chat/first_message")
+async def first_message_endpoint(
+    request: FirstMessageRequest,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    获取自定义身份的首次提问
+
+    - user_type: 'custom' 表示自定义身份
+    - custom_identity: 用户描述的身份信息
+    """
+    try:
+        user_type = request.user_type
+        custom_identity = request.custom_identity
+        session_id = request.session_id
+
+        if user_type != 'custom':
+            return JSONResponse(content={"error": "请使用 custom 类型"}, status_code=400)
+
+        if not custom_identity or not custom_identity.strip():
+            return JSONResponse(content={"error": "请输入身份描述"}, status_code=400)
+
+        # 生成会话 ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 填充 prompt
+        prompt = FIRST_MESSAGE_FOR_CUSTOM_IDENTITY_PROMPT.format(custom_identity=custom_identity)
+
+        # 调用 LLM 生成首次提问（使用 conversation_llm）
+        from langchain_core.prompts import ChatPromptTemplate
+        from resume_agent import conversation_llm
+
+        # 创建提示模板
+        prompt_template = ChatPromptTemplate.from_template("{prompt}")
+        chain = prompt_template | conversation_llm
+
+        # 调用 LLM
+        response = chain.invoke({"prompt": prompt})
+        ai_message = response.content
+
+        # 保存 AI 消息到数据库（同时保存到 messages 和 compressed_context）
+        from database import save_conversation, save_conversation_context
+        from langchain_core.messages import HumanMessage, AIMessage
+
+        # 保存到 messages 字段
+        save_conversation(db, current_user.id, session_id, [
+            {"type": "human", "content": f"我的身份描述：{custom_identity}"},
+            {"type": "ai", "content": ai_message}
+        ])
+
+        # 保存到 compressed_context 字段
+        human_msg = HumanMessage(content=f"我的身份描述：{custom_identity}")
+        ai_msg = AIMessage(content=ai_message)
+        save_conversation_context(
+            db,
+            current_user.id,
+            session_id,
+            [
+                {"type": "human", "content": f"我的身份描述：{custom_identity}"},
+                {"type": "ai", "content": ai_message}
+            ]
+        )
+
+        return JSONResponse(content={
+            "message": ai_message,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        print(f"首次提问接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+class FirstMessageFromResumeRequest(BaseModel):
+    session_id: str = ""
+
+@app.post("/api/chat/first_message_from_resume")
+async def first_message_from_resume_endpoint(
+    request: FirstMessageFromResumeRequest,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    根据已解析的简历内容获取首次提问
+    """
+    try:
+        session_id = request.session_id
+
+        # 生成会话 ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 从数据库获取用户简历数据
+        resume_data = get_user_resume(db, current_user.id)
+
+        if not resume_data:
+            return JSONResponse(content={
+                "message": "简历已解析完成！我是简历助手，有什么可以帮助你的吗？",
+                "session_id": session_id
+            })
+
+        # 填充 prompt
+        prompt = FIRST_MESSAGE_FROM_RESUME_PROMPT.format(resume_data=json.dumps(resume_data, ensure_ascii=False, indent=2))
+
+        # 调用 LLM 生成首次提问（使用 conversation_llm）
+        from langchain_core.prompts import ChatPromptTemplate
+        from resume_agent import conversation_llm
+
+        # 创建提示模板
+        prompt_template = ChatPromptTemplate.from_template("{prompt}")
+        chain = prompt_template | conversation_llm
+
+        # 调用 LLM
+        response = chain.invoke({"prompt": prompt})
+        ai_message = response.content
+
+        # 保存 AI 消息到数据库（同时保存到 messages 和 compressed_context）
+        from database import save_conversation, save_conversation_context
+
+        # 保存到 messages 字段
+        save_conversation(db, current_user.id, session_id, [
+            {"type": "ai", "content": ai_message}
+        ])
+
+        # 保存到 compressed_context 字段
+        save_conversation_context(
+            db,
+            current_user.id,
+            session_id,
+            [
+                {"type": "ai", "content": ai_message}
+            ]
+        )
+
+        return JSONResponse(content={
+            "message": ai_message,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        print(f"简历首次提问接口错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+class SaveAIMessageRequest(BaseModel):
+    message: str
+    session_id: str = ""
+
+@app.post("/api/chat/save_ai_message")
+async def save_ai_message_endpoint(
+    request: SaveAIMessageRequest,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    保存 AI 消息到数据库（同时保存到 messages 和 compressed_context）
+    """
+    try:
+        message = request.message
+        session_id = request.session_id
+
+        if not message or not message.strip():
+            return JSONResponse(content={"error": "消息不能为空"}, status_code=400)
+
+        # 生成会话 ID
+        if not session_id:
+            session_id = generate_session_id()
+
+        # 保存 AI 消息到数据库
+        from database import save_conversation, save_conversation_context
+
+        # 保存到 messages 字段
+        save_conversation(db, current_user.id, session_id, [
+            {"type": "ai", "content": message}
+        ])
+
+        # 保存到 compressed_context 字段
+        save_conversation_context(
+            db,
+            current_user.id,
+            session_id,
+            [
+                {"type": "ai", "content": message}
+            ]
+        )
+
+        return JSONResponse(content={
+            "success": True,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        print(f"保存 AI 消息接口错误: {str(e)}")
         import traceback
         traceback.print_exc()
         return JSONResponse(content={"error": str(e)}, status_code=500)
@@ -1120,7 +1518,7 @@ if __name__ == "__main__":
     try:
         db = SessionLocal()
         admin_email = "admin@qq.com"
-        admin_password = "admin"
+        admin_password = "888888"
         existing_admin = get_user_by_email(db, admin_email)
         if existing_admin:
             print(f"[User] 管理员账号已存在: {admin_email}")

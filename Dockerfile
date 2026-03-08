@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     shared-mime-info \
     curl \
+    # 安装中文字体（解决 PDF 中文乱码问题）
+    fonts-noto-cjk \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,4 +38,4 @@ RUN mkdir -p data && touch data/deepagents.db
 EXPOSE 8000
 
 # 使用 Gunicorn（生产环境推荐）
-CMD ["gunicorn", "mcp_service_simple:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "mcp_service_simple:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "6", "--access-logfile", "-", "--error-logfile", "-"]

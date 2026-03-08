@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onUnmounted } from 'vue'
+import { labels } from '../utils/labels.js'
 
 const props = defineProps({
   data: {
@@ -18,10 +19,28 @@ const props = defineProps({
     type: Object,
     required: false,
     default: null
+  },
+  // 是否为移动端视图（由父组件传入）
+  isMobileView: {
+    type: Boolean,
+    required: false,
+    default: false
+  },
+  // 语言：'zh' | 'en'
+  lang: {
+    type: String,
+    required: false,
+    default: 'zh'
   }
 })
 
-const emit = defineEmits(['open-jd-dialog', 'open-resume-edit'])
+// 获取当前语言的标签
+const t = computed(() => labels[props.lang] || labels.zh)
+
+const emit = defineEmits(['open-jd-dialog', 'open-resume-edit', 'toggle-lang'])
+
+// 检测是否为移动端视图
+const isMobile = computed(() => props.isMobileView || window.innerWidth < 1200)
 
 // ========== 样式控制变量 ==========
 const marginVertical = ref(9)
@@ -29,6 +48,13 @@ const marginHorizontal = ref(9)
 const moduleMargin = ref(1)
 const lineHeight = ref(1.6)
 const fontSize = ref(11)
+
+// 移动端样式面板展开状态
+const isStylePanelExpanded = ref(false)
+
+function toggleStylePanel() {
+  isStylePanelExpanded.value = !isStylePanelExpanded.value
+}
 
 // A4尺寸（像素，96dpi）
 const PAGE_WIDTH = 794
@@ -73,7 +99,7 @@ const allItems = computed(() => {
     items.push({ type: 'basics', index: index++, visible: true })
   }
 
-  if (props.data.education) {
+  if (props.data.education && props.data.education.length) {
     items.push({ type: 'education-title', index: index++, visible: true })
     props.data.education.forEach((edu, i) => {
       items.push({ type: 'education-item', dataIndex: i, index: index++, visible: true })
@@ -86,7 +112,7 @@ const allItems = computed(() => {
     })
   }
 
-  if (props.data.work_experience) {
+  if (props.data.work_experience && props.data.work_experience.length) {
     items.push({ type: 'work-title', index: index++, visible: true })
     props.data.work_experience.forEach((work, i) => {
       items.push({ type: 'work-item', dataIndex: i, index: index++, visible: true })
@@ -97,7 +123,7 @@ const allItems = computed(() => {
     })
   }
 
-  if (props.data.project_experience || props.data.projects) {
+  if ((props.data.project_experience || props.data.projects) && (props.data.project_experience || props.data.projects).length) {
     items.push({ type: 'projects-title', index: index++, visible: true })
     const projects = props.data.project_experience || props.data.projects
     projects.forEach((proj, i) => {
@@ -109,7 +135,7 @@ const allItems = computed(() => {
     })
   }
 
-  if (props.data.others) {
+  if (props.data.others && (props.data.others.skills?.length || props.data.others.certificates?.length || props.data.others.languages?.length)) {
     items.push({ type: 'others-title', index: index++, visible: true })
     // 技能一行显示
     if (props.data.others.skills?.length) {
@@ -125,8 +151,8 @@ const allItems = computed(() => {
     }
   }
 
-  // 每条自我评价独立分页
-  if (props.data.self_evaluation) {
+  // 每条{{ t.selfEvaluation }}独立分页
+  if (props.data.self_evaluation && props.data.self_evaluation.length) {
     items.push({ type: 'self-eval-title', index: index++, visible: true })
     props.data.self_evaluation.forEach((_, i) => {
       items.push({ type: 'self-eval-item', dataIndex: i, index: index++, visible: true })
@@ -446,7 +472,8 @@ const exportPDF = async () => {
       },
       body: JSON.stringify({
         resume_data: props.data,
-        style: style
+        style: style,
+        lang: props.lang
       })
     })
 
@@ -550,80 +577,157 @@ const getItemIndex = (type, dataIndex) => {
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
           </svg>
         </div>
-        <div class="toolbar-controls-container">
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">页边距</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">上下: {{ marginVertical }}rem</label>
-                <input type="range" v-model.number="marginVertical" min="3" max="12" step="0.25" class="slider">
+        
+        <!-- 移动端：可展开的样式调整面板 -->
+        <template v-if="isMobile">
+          <div class="mobile-toolbar-row">
+            <button class="mobile-style-btn" @click="toggleStylePanel" :class="{ active: isStylePanelExpanded }">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              <span>{{ isStylePanelExpanded ? '收起' : '调整样式' }}</span>
+            </button>
+            
+            <!-- 移动端操作按钮 - 始终显示 -->
+            <button class="mobile-jd-btn" @click="emit('open-resume-edit')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span>编辑简历</span>
+            </button>
+            <button class="mobile-jd-btn" @click="emit('open-jd-dialog')">
+              <span v-if="!jdData" class="red-dot"></span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+              <span>目标岗位</span>
+            </button>
+            <button class="mobile-export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
+              <span v-if="isExportingPDF" class="spinner"></span>
+              <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
+            </button>
+          </div>
+          
+          <!-- 可展开的样式控制面板 -->
+          <Transition name="slide-down">
+            <div v-if="isStylePanelExpanded" class="style-panel-mobile">
+              <div class="style-control-row">
+                <div class="style-control-item">
+                  <label class="style-label">上下边距: {{ marginVertical }}rem</label>
+                  <input type="range" v-model.number="marginVertical" min="3" max="12" step="0.25" class="slider">
+                </div>
+                <div class="style-control-item">
+                  <label class="style-label">左右边距: {{ marginHorizontal }}rem</label>
+                  <input type="range" v-model.number="marginHorizontal" min="3" max="12" step="0.25" class="slider">
+                </div>
               </div>
-              <div class="control-item">
-                <label class="control-label">左右: {{ marginHorizontal }}rem</label>
-                <input type="range" v-model.number="marginHorizontal" min="3" max="12" step="0.25" class="slider">
+              <div class="style-control-row">
+                <div class="style-control-item">
+                  <label class="style-label">模块间距: {{ moduleMargin }}rem</label>
+                  <input type="range" v-model.number="moduleMargin" min="0.25" max="2" step="0.25" class="slider">
+                </div>
+                <div class="style-control-item">
+                  <label class="style-label">行间距: {{ lineHeight }}</label>
+                  <input type="range" v-model.number="lineHeight" min="1.1" max="2.2" step="0.1" class="slider">
+                </div>
+              </div>
+              <div class="style-control-row single">
+                <div class="style-control-item">
+                  <label class="style-label">字体大小: {{ fontSize }}pt</label>
+                  <input type="range" v-model.number="fontSize" min="9" max="14" step="0.5" class="slider">
+                </div>
+              </div>
+            </div>
+          </Transition>
+        </template>
+        
+        <!-- PC端：原有的工具栏 -->
+        <template v-else>
+          <div class="toolbar-controls-container">
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">页边距</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">上下: {{ marginVertical }}rem</label>
+                  <input type="range" v-model.number="marginVertical" min="3" max="12" step="0.25" class="slider">
+                </div>
+                <div class="control-item">
+                  <label class="control-label">左右: {{ marginHorizontal }}rem</label>
+                  <input type="range" v-model.number="marginHorizontal" min="3" max="12" step="0.25" class="slider">
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">模块边距</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">间距: {{ moduleMargin }}rem</label>
+                  <input type="range" v-model.number="moduleMargin" min="0.25" max="2" step="0.25" class="slider">
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">行间距</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">行距: {{ lineHeight }}</label>
+                  <input type="range" v-model.number="lineHeight" min="1.1" max="2.2" step="0.1" class="slider">
+                </div>
+              </div>
+            </div>
+            <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
+              <h3 class="toolbar-title">字体大小</h3>
+              <div class="toolbar-controls">
+                <div class="control-item">
+                  <label class="control-label">大小: {{ fontSize }}pt</label>
+                  <input type="range" v-model.number="fontSize" min="9" max="14" step="0.5" class="slider">
+                </div>
               </div>
             </div>
           </div>
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">模块边距</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">间距: {{ moduleMargin }}rem</label>
-                <input type="range" v-model.number="moduleMargin" min="0.25" max="2" step="0.25" class="slider">
-              </div>
+          <div class="toolbar-section toolbar-actions">
+            <!-- 语言切换 -->
+            <div class="lang-toggle">
+              <span :class="{ active: lang === 'zh' }" @click="emit('toggle-lang', 'zh')">中</span>
+              <span :class="{ active: lang === 'en' }" @click="emit('toggle-lang', 'en')">EN</span>
             </div>
+            <button
+              class="jd-upload-btn"
+              @click="emit('open-resume-edit')"
+              title="编辑简历"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span>编辑简历</span>
+            </button>
+            <button
+              class="jd-upload-btn"
+              @click="emit('open-jd-dialog')"
+              title="上传目标岗位信息"
+            >
+              <span v-if="!jdData" class="red-dot"></span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+              <span>目标岗位</span>
+            </button>
+            <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
+              <span v-if="isExportingPDF" class="spinner"></span>
+              <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
+            </button>
           </div>
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">行间距</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">行距: {{ lineHeight }}</label>
-                <input type="range" v-model.number="lineHeight" min="1.1" max="2.2" step="0.1" class="slider">
-              </div>
-            </div>
-          </div>
-          <div class="toolbar-section" @mouseenter="showControlPanel" @mouseleave="hideControlPanel">
-            <h3 class="toolbar-title">字体大小</h3>
-            <div class="toolbar-controls">
-              <div class="control-item">
-                <label class="control-label">大小: {{ fontSize }}pt</label>
-                <input type="range" v-model.number="fontSize" min="9" max="14" step="0.5" class="slider">
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="toolbar-section toolbar-actions">
-          <button
-            class="jd-upload-btn"
-            @click="emit('open-resume-edit')"
-            title="编辑简历"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-            <span>编辑简历</span>
-          </button>
-          <button
-            class="jd-upload-btn"
-            @click="emit('open-jd-dialog')"
-            title="上传目标岗位信息"
-          >
-            <span v-if="!jdData" class="red-dot"></span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-              <polyline points="14 2 14 8 20 8"></polyline>
-              <line x1="16" y1="13" x2="8" y2="13"></line>
-              <line x1="16" y1="17" x2="8" y2="17"></line>
-              <polyline points="10 9 9 9 8 9"></polyline>
-            </svg>
-            <span>目标岗位</span>
-          </button>
-          <button class="export-btn" @click="exportPDF" :disabled="isExportingPDF || !data">
-            <span v-if="isExportingPDF" class="spinner"></span>
-            <span>{{ isExportingPDF ? '导出中...' : '导出PDF' }}</span>
-          </button>
-        </div>
+        </template>
       </div>
     </div>
 
@@ -635,6 +739,10 @@ const getItemIndex = (type, dataIndex) => {
       <div ref="contentRef" class="content-source" :style="[pageStyles, pagePaddingStyle]">
       <!-- 个人信息 -->
       <div v-if="data.basics" class="pageable-item personal-info" :class="{ 'module-highlight': highlightedModule === 'basics' }" data-module="basics">
+        <!-- 证件照绝对定位（不参与居中计算） -->
+        <div v-if="data.basics.photo" class="photo-container">
+          <img :src="data.basics.photo" class="profile-photo" alt="证件照" />
+        </div>
         <h1 class="name">{{ data.basics.name || '姓名未填写' }}</h1>
         <div class="contact-info">
           <span v-if="data.basics?.gender" v-html="formatText(data.basics.gender)"></span>
@@ -644,13 +752,13 @@ const getItemIndex = (type, dataIndex) => {
           <span v-if="data.basics?.email" v-html="formatText(data.basics.email)"></span>
         </div>
         <div v-if="data.basics?.target_position" class="target-position">
-          目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
+          {{ t.targetPosition }}：<span v-html="formatText(data.basics.target_position)"></span>
         </div>
       </div>
 
-      <!-- 教育经历 -->
+      <!-- {{ t.education }} -->
       <template v-if="data.education && data.education.length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">教育经历</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">{{ t.education }}</h2>
         <div v-for="(item, idx) in data.education" :key="idx" class="pageable-item education-item">
           <div class="education-header">
             <div class="school-info">
@@ -667,7 +775,7 @@ const getItemIndex = (type, dataIndex) => {
           <template v-for="(item, idx) in data.education">
             <template v-if="item.theses?.length">
               <div v-for="(thesis, tIdx) in item.theses" :key="'thesis-'+idx+'-'+tIdx" class="pageable-item thesis-item">
-                <h4 class="subfield-title">论文</h4>
+                <h4 class="subfield-title">{{ t.thesis }}</h4>
                 <div class="thesis-title" v-html="formatText(thesis.title)"></div>
                 <ul v-if="thesis.details?.length" class="list-items">
                   <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
@@ -678,9 +786,9 @@ const getItemIndex = (type, dataIndex) => {
         </template>
       </template>
 
-      <!-- 工作经历 -->
+      <!-- {{ t.workExperience }} -->
       <template v-if="data.work_experience && data.work_experience.length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">工作经历</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">{{ t.workExperience }}</h2>
         <div v-for="(item, idx) in data.work_experience" :key="idx" class="pageable-item work-item">
           <div class="work-header">
             <div class="work-main">
@@ -701,9 +809,9 @@ const getItemIndex = (type, dataIndex) => {
         </template>
       </template>
 
-      <!-- 项目经历 -->
+      <!-- {{ t.projectExperience }} -->
       <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">项目经历</h2>
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">{{ t.projectExperience }}</h2>
         <div v-for="(item, idx) in (data.project_experience || data.projects)" :key="idx" class="pageable-item project-item">
           <div class="project-header">
             <div class="project-name" v-html="formatText(item.project_name || item.name || '项目未填写')"></div>
@@ -731,7 +839,7 @@ const getItemIndex = (type, dataIndex) => {
         <!-- 技能一行显示 -->
         <template v-if="data.others.skills?.length">
           <div class="pageable-item cert-lang-line">
-            <span class="cert-lang-label">技能：</span>
+            <span class="cert-lang-label">{{ t.skills }}：</span>
             <template v-for="(skill, sIdx) in data.others.skills">
               <span v-html="formatText(skill)"></span><span v-if="sIdx < data.others.skills.length - 1" class="cert-lang-separator"> | </span>
             </template>
@@ -740,7 +848,7 @@ const getItemIndex = (type, dataIndex) => {
         <!-- 证书一行显示 -->
         <template v-if="data.others.certificates?.length">
           <div class="pageable-item cert-lang-line">
-            <span class="cert-lang-label">证书：</span>
+            <span class="cert-lang-label">{{ t.certificates }}：</span>
             <template v-for="(cert, cIdx) in data.others.certificates">
               <span v-html="formatText(cert)"></span><span v-if="cIdx < data.others.certificates.length - 1" class="cert-lang-separator"> | </span>
             </template>
@@ -749,7 +857,7 @@ const getItemIndex = (type, dataIndex) => {
         <!-- 语言一行显示 -->
         <template v-if="data.others.languages?.length">
           <div class="pageable-item cert-lang-line">
-            <span class="cert-lang-label">语言：</span>
+            <span class="cert-lang-label">{{ t.language }}：</span>
             <template v-for="(lang, lIdx) in data.others.languages">
               <span v-html="formatText(lang)"></span><span v-if="lIdx < data.others.languages.length - 1" class="cert-lang-separator"> | </span>
             </template>
@@ -757,10 +865,10 @@ const getItemIndex = (type, dataIndex) => {
         </template>
       </template>
 
-      <!-- 自我评价 -->
+      <!-- {{ t.selfEvaluation }} -->
       <template v-if="data.self_evaluation && data.self_evaluation.length">
-        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">自我评价</h2>
-        <!-- 每条自我评价独立分页 -->
+        <h2 class="pageable-item section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">{{ t.selfEvaluation }}</h2>
+        <!-- 每条{{ t.selfEvaluation }}独立分页 -->
         <template v-for="(item, idx) in data.self_evaluation">
           <div v-if="item" :key="'self-eval-'+idx" class="pageable-item self-eval-item">
             <span v-html="formatText(item)"></span>
@@ -773,6 +881,9 @@ const getItemIndex = (type, dataIndex) => {
     <div class="print-container" :style="[pageStyles, pagePaddingStyle]" v-if="data && data.work_experience">
       <!-- 个人信息 -->
       <div class="personal-info">
+        <div v-if="data.basics?.photo" class="photo-container">
+          <img :src="data.basics.photo" class="profile-photo" alt="证件照" />
+        </div>
         <h1 class="name">{{ data.basics?.name || '姓名未填写' }}</h1>
         <div class="contact-info">
           <span v-if="data.basics?.gender" v-html="formatText(data.basics.gender)"></span>
@@ -782,13 +893,13 @@ const getItemIndex = (type, dataIndex) => {
           <span v-if="data.basics?.email" v-html="formatText(data.basics.email)"></span>
         </div>
         <div v-if="data.basics?.target_position" class="target-position">
-          目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
+          {{ t.targetPosition }}：<span v-html="formatText(data.basics.target_position)"></span>
         </div>
       </div>
 
-      <!-- 教育经历 -->
+      <!-- {{ t.education }} -->
       <template v-if="data.education && data.education.length">
-        <h2 class="section-title">教育经历</h2>
+        <h2 class="section-title">{{ t.education }}</h2>
         <div v-for="(item, idx) in data.education" :key="idx" class="education-item">
           <div class="education-header">
             <div class="school-info">
@@ -803,7 +914,7 @@ const getItemIndex = (type, dataIndex) => {
           <!-- 论文 -->
           <template v-if="item.theses?.length">
             <div v-for="(thesis, tIdx) in item.theses" :key="'thesis-'+idx+'-'+tIdx" class="thesis-item">
-              <h4 class="subfield-title">论文</h4>
+              <h4 class="subfield-title">{{ t.thesis }}</h4>
               <div class="thesis-title" v-html="formatText(thesis.title)"></div>
               <ul v-if="thesis.details?.length" class="list-items">
                 <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
@@ -813,9 +924,9 @@ const getItemIndex = (type, dataIndex) => {
         </div>
       </template>
 
-      <!-- 工作经历 -->
+      <!-- {{ t.workExperience }} -->
       <template v-if="data.work_experience && data.work_experience.length">
-        <h2 class="section-title">工作经历</h2>
+        <h2 class="section-title">{{ t.workExperience }}</h2>
         <div v-for="(item, idx) in data.work_experience" :key="idx" class="work-item">
           <div class="work-header">
             <div class="work-main">
@@ -830,9 +941,9 @@ const getItemIndex = (type, dataIndex) => {
         </div>
       </template>
 
-      <!-- 项目经历 -->
+      <!-- {{ t.projectExperience }} -->
       <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
-        <h2 class="section-title">项目经历</h2>
+        <h2 class="section-title">{{ t.projectExperience }}</h2>
         <div v-for="(item, idx) in (data.project_experience || data.projects)" :key="idx" class="project-item">
           <div class="project-header">
             <div class="project-name" v-html="formatText(item.project_name || item.name || '项目未填写')"></div>
@@ -852,28 +963,28 @@ const getItemIndex = (type, dataIndex) => {
       <template v-if="data.others && (data.others.skills?.length || data.others.certificates?.length || data.others.languages?.length)">
         <h2 class="section-title">其他</h2>
         <div v-if="data.others.skills?.length" class="cert-lang-line">
-          <span class="cert-lang-label">技能：</span>
+          <span class="cert-lang-label">{{ t.skills }}：</span>
           <template v-for="(skill, sIdx) in data.others.skills" :key="'skill-'+sIdx">
             <span v-html="formatText(skill)"></span><span v-if="sIdx < data.others.skills.length - 1" class="cert-lang-separator"> | </span>
           </template>
         </div>
         <div v-if="data.others.certificates?.length" class="cert-lang-line">
-          <span class="cert-lang-label">证书：</span>
+          <span class="cert-lang-label">{{ t.certificates }}：</span>
           <template v-for="(cert, cIdx) in data.others.certificates" :key="'cert-'+cIdx">
             <span v-html="formatText(cert)"></span><span v-if="cIdx < data.others.certificates.length - 1" class="cert-lang-separator"> | </span>
           </template>
         </div>
         <div v-if="data.others.languages?.length" class="cert-lang-line">
-          <span class="cert-lang-label">语言：</span>
+          <span class="cert-lang-label">{{ t.language }}：</span>
           <template v-for="(lang, lIdx) in data.others.languages" :key="'lang-'+lIdx">
             <span v-html="formatText(lang)"></span><span v-if="lIdx < data.others.languages.length - 1" class="cert-lang-separator"> | </span>
           </template>
         </div>
       </template>
 
-      <!-- 自我评价 -->
+      <!-- {{ t.selfEvaluation }} -->
       <template v-if="data.self_evaluation && data.self_evaluation.length">
-        <h2 class="section-title">自我评价</h2>
+        <h2 class="section-title">{{ t.selfEvaluation }}</h2>
         <template v-for="(item, idx) in data.self_evaluation">
           <div v-if="item" :key="'self-eval-'+idx" class="self-eval-item" v-html="formatText(item)"></div>
         </template>
@@ -887,6 +998,9 @@ const getItemIndex = (type, dataIndex) => {
           <div class="page-content" :style="pageStyles">
             <!-- 个人信息 -->
             <div v-if="data.basics && isItemVisible({index: getItemIndex('basics', 0)}, page - 1)" class="personal-info" :class="{ 'module-highlight': highlightedModule === 'basics' }" data-module="basics">
+              <div v-if="data.basics.photo" class="photo-container">
+                <img :src="data.basics.photo" class="profile-photo" alt="证件照" />
+              </div>
               <h1 class="name">{{ data.basics.name || '姓名未填写' }}</h1>
               <div class="contact-info">
                 <span v-if="data.basics.gender" v-html="formatText(data.basics.gender)"></span>
@@ -896,13 +1010,13 @@ const getItemIndex = (type, dataIndex) => {
                 <span v-if="data.basics.email" v-html="formatText(data.basics.email)"></span>
               </div>
               <div v-if="data.basics.target_position" class="target-position">
-                目标岗位：<span v-html="formatText(data.basics.target_position)"></span>
+                {{ t.targetPosition }}：<span v-html="formatText(data.basics.target_position)"></span>
               </div>
             </div>
 
-            <!-- 教育经历 -->
+            <!-- {{ t.education }} -->
             <template v-if="data.education && data.education.length">
-              <h2 v-if="isItemVisible({index: getItemIndex('education-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">教育经历</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('education-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'education' }" data-module="education">{{ t.education }}</h2>
               <template v-for="(item, idx) in data.education">
                 <div v-if="isItemVisible({index: getItemIndex('education-item', idx)}, page - 1)" :key="'edu-'+idx" class="education-item" :class="{ 'content-highlight': highlightedModule === 'education' }">
                   <div class="education-header">
@@ -920,7 +1034,7 @@ const getItemIndex = (type, dataIndex) => {
                 <template v-if="item.theses?.length">
                   <template v-for="(thesis, tIdx) in item.theses">
                     <div v-if="isItemVisible({index: getItemIndex('thesis-item', `${idx}-${tIdx}`)}, page - 1)" :key="'thesis-'+idx+'-'+tIdx" class="thesis-item">
-                      <h4 class="subfield-title">论文</h4>
+                      <h4 class="subfield-title">{{ t.thesis }}</h4>
                       <div class="thesis-title" v-html="formatText(thesis.title)"></div>
                       <ul v-if="thesis.details?.length" class="list-items">
                         <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
@@ -931,9 +1045,9 @@ const getItemIndex = (type, dataIndex) => {
               </template>
             </template>
 
-            <!-- 工作经历 -->
+            <!-- {{ t.workExperience }} -->
             <template v-if="data.work_experience && data.work_experience.length">
-              <h2 v-if="isItemVisible({index: getItemIndex('work-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">工作经历</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('work-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'work_experience' }" data-module="work_experience">{{ t.workExperience }}</h2>
               <template v-for="(item, idx) in data.work_experience">
                 <div v-if="isItemVisible({index: getItemIndex('work-item', idx)}, page - 1)" :key="'work-'+idx" class="work-item" :class="{ 'content-highlight': highlightedModule === 'work_experience' }">
                   <div class="work-header">
@@ -953,9 +1067,9 @@ const getItemIndex = (type, dataIndex) => {
               </template>
             </template>
 
-            <!-- 项目经历 -->
+            <!-- {{ t.projectExperience }} -->
             <template v-if="(data.project_experience || data.projects) && (data.project_experience || data.projects).length">
-              <h2 v-if="isItemVisible({index: getItemIndex('projects-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">项目经历</h2>
+              <h2 v-if="isItemVisible({index: getItemIndex('projects-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'project_experience' }" data-module="project_experience">{{ t.projectExperience }}</h2>
               <template v-for="(item, idx) in (data.project_experience || data.projects)">
                 <div v-if="isItemVisible({index: getItemIndex('project-item', idx)}, page - 1)" :key="'proj-'+idx" class="project-item" :class="{ 'content-highlight': highlightedModule === 'project_experience' }">
                   <div class="project-header">
@@ -982,7 +1096,7 @@ const getItemIndex = (type, dataIndex) => {
               <!-- 技能一行显示 -->
               <template v-if="data.others.skills?.length">
                 <div v-if="isItemVisible({index: getItemIndex('skill-line', 0)}, page - 1)" class="cert-lang-line">
-                  <span class="cert-lang-label">技能：</span>
+                  <span class="cert-lang-label">{{ t.skills }}：</span>
                   <template v-for="(skill, sIdx) in data.others.skills">
                     <span v-html="formatText(skill)"></span><span v-if="sIdx < data.others.skills.length - 1" class="cert-lang-separator"> | </span>
                   </template>
@@ -991,7 +1105,7 @@ const getItemIndex = (type, dataIndex) => {
               <!-- 证书一行显示 -->
               <template v-if="data.others.certificates?.length">
                 <div v-if="isItemVisible({index: getItemIndex('cert-line', 0)}, page - 1)" class="cert-lang-line">
-                  <span class="cert-lang-label">证书：</span>
+                  <span class="cert-lang-label">{{ t.certificates }}：</span>
                   <template v-for="(cert, cIdx) in data.others.certificates">
                     <span v-html="formatText(cert)"></span><span v-if="cIdx < data.others.certificates.length - 1" class="cert-lang-separator"> | </span>
                   </template>
@@ -1000,7 +1114,7 @@ const getItemIndex = (type, dataIndex) => {
               <!-- 语言一行显示 -->
               <template v-if="data.others.languages?.length">
                 <div v-if="isItemVisible({index: getItemIndex('lang-line', 0)}, page - 1)" class="cert-lang-line">
-                  <span class="cert-lang-label">语言：</span>
+                  <span class="cert-lang-label">{{ t.language }}：</span>
                   <template v-for="(lang, lIdx) in data.others.languages">
                     <span v-html="formatText(lang)"></span><span v-if="lIdx < data.others.languages.length - 1" class="cert-lang-separator"> | </span>
                   </template>
@@ -1008,10 +1122,10 @@ const getItemIndex = (type, dataIndex) => {
               </template>
             </template>
 
-            <!-- 自我评价 -->
+            <!-- {{ t.selfEvaluation }} -->
             <template v-if="data.self_evaluation && data.self_evaluation.length">
-              <h2 v-if="isItemVisible({index: getItemIndex('self-eval-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">自我评价</h2>
-              <!-- 每条自我评价独立分页 -->
+              <h2 v-if="isItemVisible({index: getItemIndex('self-eval-title', 0)}, page - 1)" class="section-title" :class="{ 'title-highlight': highlightedModule === 'self_evaluation' }" data-module="self_evaluation">{{ t.selfEvaluation }}</h2>
+              <!-- 每条{{ t.selfEvaluation }}独立分页 -->
               <template v-for="(item, idx) in data.self_evaluation">
                 <div v-if="item && isItemVisible({index: getItemIndex('self-eval-item', idx)}, page - 1)" :key="'self-eval-'+idx" class="self-eval-item" :class="{ 'content-highlight': highlightedModule === 'self_evaluation' }">
                   <span v-html="formatText(item)"></span>
@@ -1074,7 +1188,7 @@ const getItemIndex = (type, dataIndex) => {
   background-color: transparent;
   padding: 0.5rem 1rem;
   box-shadow: none;
-  border-bottom: 1px solid #303030;
+  border-bottom: 1px solid #e0e0e0;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -1233,6 +1347,30 @@ const getItemIndex = (type, dataIndex) => {
   box-shadow: none;
   transform: none;
 }
+/* 语言切换 */
+.lang-toggle {
+  display: flex;
+  border: 1px solid #303030;
+}
+.lang-toggle span {
+  padding: 0.4rem 0.6rem;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.lang-toggle span:first-child {
+  border-right: 1px solid #303030;
+}
+.lang-toggle span.active {
+  background: #303030;
+  color: #f8bebe;
+}
+.lang-toggle span:not(.active):hover {
+  background: #f0f0f0;
+}
 /* JD上传按钮 */
 .jd-upload-btn {
   background: transparent;
@@ -1347,14 +1485,17 @@ const getItemIndex = (type, dataIndex) => {
 }
 .personal-info {
   text-align: center;
-  margin-bottom: var(--module-margin);
+  position: relative;
+  min-height: 110px;
 }
-.name {
+
+.personal-info .name {
   font-size: 1.5em;
   font-weight: 700;
   margin: 0 0 0.25em 0;
   color: #212529;
 }
+
 .contact-info {
   display: flex;
   justify-content: center;
@@ -1362,20 +1503,33 @@ const getItemIndex = (type, dataIndex) => {
   flex-wrap: wrap;
   font-size: 0.8em;
   color: #6c757d;
-  margin-bottom: 0.25em;
 }
-.separator {
-  color: #6c757d;
+
+.photo-container {
+  position: absolute;
+  top: 0;
+  right: 0;
 }
+
+.profile-photo {
+  width: 80px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
 .target-position {
   font-size: 0.8em;
   color: #212529;
   font-weight: 600;
+  margin-top: 0.25em;
 }
+
 .section-title {
   font-size: 1.1em;
   font-weight: 600;
-  margin: 0 0 0.5em 0;
+  margin: 0 0 var(--module-margin, 0.5em) 0;
   color: #212529;
   padding-bottom: 0.25em;
   border-bottom: 2px solid #333;
@@ -1385,7 +1539,7 @@ const getItemIndex = (type, dataIndex) => {
 .education-item,
 .work-item,
 .project-item {
-  margin-bottom: 0.5em;
+  margin-bottom: var(--module-margin, 0.5em);
 }
 .education-header,
 .work-header,
@@ -1471,7 +1625,7 @@ const getItemIndex = (type, dataIndex) => {
 .skill-section,
 .cert-section,
 .lang-section {
-  margin-bottom: 0.5em;
+  margin-bottom: var(--module-margin, 0.5em);
 }
 .skill-list {
   display: flex;
@@ -1534,17 +1688,15 @@ const getItemIndex = (type, dataIndex) => {
   font-size: 10pt;
   color: #6c757d;
 }
-.page-indicator {
-  background: rgba(0, 0, 0, 0.7);
-  color: white;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 14px;
-  font-weight: 500;
-  position: fixed;
-  bottom: 30px;
-  right: 30px;
-  z-index: 100;
+/* PC端页面指示器 - 保持原来的定位方式 */
+@media (min-width: 1200px) {
+  .page-indicator {
+    position: absolute;
+    right: 20px;
+    bottom: 30px;
+    color: #6c757d;
+    font-size: 12px;
+  }
 }
 .no-data {
   display: flex;
@@ -1777,6 +1929,308 @@ const getItemIndex = (type, dataIndex) => {
   }
   75% {
     background-color: rgba(6, 182, 212, 0.1);
+  }
+}
+
+/* ==================== 移动端适配（0-1200px统一使用移动端样式） ==================== */
+@media (max-width: 1200px) {
+  .resume-wrapper {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 移动端工具栏固定在底部 Tab 栏上方 */
+  .resume-toolbar-wrapper {
+    position: fixed;
+    bottom: 60px;
+    top: auto;
+    left: 0;
+    right: 0;
+    z-index: 999;
+    background-color: rgb(249, 245, 242);
+    border-top: 1px solid #e0e0e0;
+    border-bottom: none;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+  }
+
+  /* 当样式面板展开时，工具栏高度增加 */
+  .resume-toolbar-wrapper:has(.style-panel-mobile) {
+    bottom: 60px;
+  }
+
+  .resume-toolbar {
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    gap: 6px;
+    border-bottom: none;
+  }
+
+  /* 移动端隐藏 toolbar-icon */
+  .toolbar-icon {
+    display: none !important;
+  }
+
+  /* 移动端红点位置调整 */
+  .mobile-jd-btn .red-dot {
+    top: -2px;
+    right: -2px;
+    width: 6px;
+    height: 6px;
+  }
+
+  .toolbar-controls-container {
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .toolbar-title {
+    padding: 5px 8px;
+    font-size: 10px;
+  }
+
+  .toolbar-actions {
+    gap: 6px;
+  }
+
+  .jd-upload-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+  }
+
+  .export-btn {
+    padding: 6px 12px;
+    font-size: 11px;
+  }
+
+  /* 预览内容区域适配 */
+  .preview-content {
+    padding: 8px;
+    flex: 1;
+    overflow-y: auto;
+    height: calc(100% - 60px);
+    box-sizing: border-box;
+  }
+
+  /* 移动端页面指示器 */
+  .page-indicator {
+    position: fixed;
+    bottom: 80px;
+    right: 12px;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1;
+    z-index: 1001;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    white-space: nowrap;
+  }
+
+  /* 移动端样式面板 */
+  .style-panel-mobile {
+    width: 100%;
+    background: rgb(254, 253, 251);
+    padding: 12px;
+    border-top: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .style-control-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .style-control-row.single {
+    justify-content: center;
+  }
+
+  .style-control-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .style-label {
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .style-panel-mobile .slider {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #e0e0e0;
+    outline: none;
+    border-radius: 2px;
+  }
+
+  .style-panel-mobile .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #303030;
+    cursor: pointer;
+    border-radius: 0;
+  }
+
+  .style-panel-mobile .slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: #303030;
+    cursor: pointer;
+    border-radius: 0;
+    border: none;
+  }
+
+  /* 移动端工具栏第一行 - 始终显示的按钮 */
+  .mobile-toolbar-row {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
+  }
+
+  /* 移动端样式调整按钮 */
+  .mobile-style-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 6px;
+    background: transparent;
+    border: 1px solid #303030;
+    border-radius: 0;
+    color: #303030;
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 0 #303030;
+    white-space: nowrap;
+  }
+
+  .mobile-style-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+
+  .mobile-style-btn.active {
+    background: #f8bebe;
+  }
+
+  /* 移动端JD按钮 - 跟PC端样式一致 */
+  .mobile-jd-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 6px;
+    background: transparent;
+    color: #303030;
+    border: 1px solid #303030;
+    border-radius: 0;
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 0 #303030;
+    white-space: nowrap;
+  }
+
+  .mobile-jd-btn:hover {
+    background: #f8bebe;
+    border-color: #303030;
+  }
+
+  .mobile-jd-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+
+  /* 移动端导出按钮 */
+  .mobile-export-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 6px;
+    background: #f8bebe;
+    color: #303030;
+    border: 1px solid #303030;
+    border-radius: 0;
+    font-family: 'GTPressuraMono-Light', sans-serif;
+    font-size: 0.625rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 0 #303030;
+    white-space: nowrap;
+  }
+
+  .mobile-export-btn:hover:not(:disabled) {
+    background: #303030;
+    color: #f8bebe;
+  }
+
+  .mobile-export-btn:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+
+  .mobile-export-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .mobile-jd-btn .spinner,
+  .mobile-export-btn .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(48, 48, 48, 0.3);
+    border-top-color: #303030;
+    border-radius: 0;
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* 展开收起动画 */
+  .slide-down-enter-active,
+  .slide-down-leave-active {
+    transition: all 0.3s ease;
+    overflow: hidden;
+  }
+
+  .slide-down-enter-from,
+  .slide-down-leave-to {
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .slide-down-enter-to,
+  .slide-down-leave-from {
+    opacity: 1;
+    max-height: 300px;
   }
 }
 </style>
