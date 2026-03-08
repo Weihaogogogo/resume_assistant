@@ -32,6 +32,12 @@ const props = defineProps({
     required: false,
     default: 'zh'
   },
+  // 当前会话ID（用于按会话导出PDF）
+  sessionId: {
+    type: String,
+    required: false,
+    default: 'default'
+  },
   // 父组件控制：AI回复中时禁用语言切换
   isLanguageSwitchDisabled: {
     type: Boolean,
@@ -483,9 +489,9 @@ const exportPDF = async () => {
         'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify({
-        resume_data: props.data,
         style: style,
-        lang: props.lang
+        lang: props.lang,
+        session_id: props.sessionId || 'default'
       })
     })
 

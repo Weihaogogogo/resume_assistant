@@ -1005,7 +1005,7 @@ async def get_parsing_status_endpoint(db: Session = Depends(get_db), current_use
 @app.post("/export_pdf")
 async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
-    导出 PDF（从数据库读取简历）
+    导出 PDF（优先从会话级简历读取，支持双语）
     """
     try:
         # 尝试获取JSON，如果请求体为空则使用空字典
@@ -1015,16 +1015,28 @@ async def export_pdf_endpoint(request: Request, db: Session = Depends(get_db), c
             request_data = {}
         style = request_data.get('style', {})
         lang = request_data.get('lang', 'zh')  # 默认中文
+        session_id = request_data.get('session_id', 'default') or 'default'
 
-        # 从数据库获取简历
-        resume_data = get_user_resume(db, current_user.id)
+        # 确保会话存在
+        migrate_resume_if_needed(db, current_user.id, session_id)
+
+        # 优先从会话级别读取简历（按语言）
+        resume_data = get_session_resume(db, current_user.id, session_id, lang)
+
+        # 兼容旧数据：会话级无数据时回退到用户级
+        if not resume_data:
+            resume_data = get_user_resume(db, current_user.id)
         if not resume_data:
             return JSONResponse(content="错误: 没有找到简历数据，请先创建或加载简历", status_code=400)
 
-        # 从数据库获取证件照
-        from database import Resume
-        resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
-        photo = resume_obj.photo if resume_obj and resume_obj.photo else None
+        # 优先使用会话级证件照
+        photo = get_session_photo(db, current_user.id, session_id)
+
+        # 兼容旧数据：会话级无证件照时回退到用户级
+        if not photo:
+            from database import Resume
+            resume_obj = db.query(Resume).filter(Resume.user_id == current_user.id).first()
+            photo = resume_obj.photo if resume_obj and resume_obj.photo else None
 
         generate_pdf = get_pdf_generator()
         pdf_bytes = generate_pdf(resume_data, style, photo, lang)

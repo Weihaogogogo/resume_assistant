@@ -592,7 +592,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
 
     .inline-list-item {{
         display: inline;
-        font-size: 0.8em;
+        font-size: 1em;
         color: #212529;
     }}
 
