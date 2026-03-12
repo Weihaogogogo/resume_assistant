@@ -160,27 +160,47 @@ class JobDescription(BaseModel):
 # LLM 配置
 # =============================================================================
 
+def _read_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    cleaned = value.strip().strip('"').strip("'")
+    return cleaned or None
+
+
+LLM_API_KEY = _read_env("LLM_API_KEY")
+LLM_BASE_URL = _read_env("BASE_URL")
+
 httpx_client = httpx.Client(
     timeout=httpx.Timeout(90.0),
-    limits=httpx.Limits(max_connections=20),
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    trust_env=False,
+)
+
+httpx_async_client = httpx.AsyncClient(
+    timeout=httpx.Timeout(90.0),
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    trust_env=False,
 )
 
 # Conversation LLM - 负责对话和读取
 conversation_llm = ChatOpenAI(
-    api_key=os.getenv("LLM_API_KEY"),
-    base_url=os.getenv("BASE_URL"),
+    api_key=LLM_API_KEY,
+    base_url=LLM_BASE_URL,
     model="gemini-3-flash-preview",
     http_client=httpx_client,
+    http_async_client=httpx_async_client,
     max_retries=3,
     temperature=0.1
 )
 
 # JD Parser LLM - 负责解析JD文本/图片为JSON
 jd_parser_llm = ChatOpenAI(
-    api_key=os.getenv("LLM_API_KEY"),
-    base_url=os.getenv("BASE_URL"),
+    api_key=LLM_API_KEY,
+    base_url=LLM_BASE_URL,
     model="gemini-3-flash-preview",
     http_client=httpx_client,
+    http_async_client=httpx_async_client,
     max_retries=3,
     temperature=0.0  # 解析需要低温度，保证JSON格式准确
 )
