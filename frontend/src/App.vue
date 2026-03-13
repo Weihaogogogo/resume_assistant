@@ -18,7 +18,6 @@ const currentLang = ref('zh')
 const showTranslateConfirm = ref(false)
 const pendingLang = ref('zh')  // 切换语言时的目标语言
 const isSwitchingLang = ref(false)
-const isLanguageSwitchDisabled = computed(() => isLoading.value || isResponding.value || isSwitchingLang.value)
 
 function resetLangToZhDefault() {
   currentLang.value = 'zh'
@@ -281,9 +280,20 @@ const showDeleteModal = ref(false)  // 是否显示删除确认弹窗
 const renameSessionTitle = ref('')  // 重命名输入框的值
 const menuPosition = ref({ top: '0px', left: '0px' })  // 菜单位置
 const isSessionBusy = ref(false)
-const isSessionSwitchLocked = computed(() => {
-  return isLoading.value || isResponding.value || hasConfirmArea.value || isLoadingInitialData.value || isSessionBusy.value
+const isUiInteractionLocked = computed(() => {
+  return (
+    isLoading.value ||
+    isResponding.value ||
+    hasConfirmArea.value ||
+    isLoadingInitialData.value ||
+    isSessionBusy.value ||
+    isSwitchingLang.value
+  )
 })
+const isSessionSwitchLocked = computed(() => {
+  return isUiInteractionLocked.value
+})
+const isLanguageSwitchDisabled = computed(() => isUiInteractionLocked.value)
 
 function guardWhileResponding(actionName = '该操作') {
   if (isResponding.value) {
@@ -3344,7 +3354,7 @@ watch(
                   @paste="handlePaste"
                   placeholder="输入你的问题或请求..."
                   rows="1"
-                  :disabled="isLoading || isResponding"
+                  :disabled="isUiInteractionLocked"
                 ></textarea>
                 <!-- 底部工具栏 -->
                 <div class="toolbar">
@@ -3352,7 +3362,7 @@ watch(
                   <button
                     @click="fileInput?.click()"
                     class="icon-btn"
-                    :disabled="isLoading || isResponding"
+                    :disabled="isUiInteractionLocked"
                     @mouseenter="(e) => showTooltip(e, '上传文件')"
                     @mouseleave="hideTooltip"
                     @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
@@ -3367,7 +3377,7 @@ watch(
                   <button
                     @click="openFullscreenDialog"
                     class="icon-btn"
-                    :disabled="isLoading || isResponding"
+                    :disabled="isUiInteractionLocked"
                     @mouseenter="(e) => showTooltip(e, '全屏输入')"
                     @mouseleave="hideTooltip"
                     @mousemove="(e) => { tooltipState.x = e.currentTarget.getBoundingClientRect().left + e.currentTarget.getBoundingClientRect().width / 2; tooltipState.y = e.currentTarget.getBoundingClientRect().bottom + 8 }"
@@ -3382,7 +3392,7 @@ watch(
                     v-if="userInput.trim() || uploadedFiles.length > 0"
                     @click="sendMessage"
                     class="icon-btn send-btn"
-                    :disabled="isLoading || isResponding"
+                    :disabled="isUiInteractionLocked"
                   >
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -3399,7 +3409,7 @@ watch(
       <!-- 右侧简历预览区 -->
       <div class="resume-section" :class="{ 'lang-switching': isSwitchingLang }">
         <div class="resume-content">
-          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLanguageSwitchDisabled" :is-language-switch-loading="isSwitchingLang" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLanguageSwitchDisabled" :is-language-switch-loading="isSwitchingLang" :is-operation-locked="isUiInteractionLocked" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
         </div>
       </div>
       </template>
@@ -3462,16 +3472,16 @@ watch(
               <div class="input-wrapper">
                 <input type="file" ref="fileInput" multiple accept="image/png, image/jpeg, image/jpg, application/pdf" @change="handleFileSelect" style="display: none;" />
                 <div class="textarea-container">
-                  <textarea v-model="userInput" @keydown="handleKeyDown" @paste="handlePaste" placeholder="输入你的问题或请求..." rows="1" :disabled="isLoading || isResponding"></textarea>
+                  <textarea v-model="userInput" @keydown="handleKeyDown" @paste="handlePaste" placeholder="输入你的问题或请求..." rows="1" :disabled="isUiInteractionLocked"></textarea>
                   <div class="toolbar mobile-toolbar">
-                    <button @click="fileInput?.click()" class="icon-btn" :disabled="isLoading || isResponding">
+                    <button @click="fileInput?.click()" class="icon-btn" :disabled="isUiInteractionLocked">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                     </button>
-                    <button @click="openFullscreenDialog" class="icon-btn" :disabled="isLoading || isResponding">
+                    <button @click="openFullscreenDialog" class="icon-btn" :disabled="isUiInteractionLocked">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
                     </button>
                     <div class="send-btn-placeholder" v-if="!(userInput.trim() || uploadedFiles.length > 0)"></div>
-                    <button v-if="userInput.trim() || uploadedFiles.length > 0" @click="sendMessage" class="icon-btn send-btn" :disabled="isLoading || isResponding">
+                    <button v-if="userInput.trim() || uploadedFiles.length > 0" @click="sendMessage" class="icon-btn send-btn" :disabled="isUiInteractionLocked">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                     </button>
                   </div>
@@ -3482,7 +3492,7 @@ watch(
 
           <!-- 简历 Tab 内容 -->
           <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" :class="{ 'lang-switching': isSwitchingLang }" key="resume">
-            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLanguageSwitchDisabled" :is-language-switch-loading="isSwitchingLang" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLanguageSwitchDisabled" :is-language-switch-loading="isSwitchingLang" :is-operation-locked="isUiInteractionLocked" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
           </div>
         </Transition>
 
