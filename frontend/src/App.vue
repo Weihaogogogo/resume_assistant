@@ -3198,17 +3198,18 @@ watch(
     <router-view v-if="!isLoggedIn || isAdminRoute"></router-view>
 
     <!-- 已登录且非管理页面：显示主内容（聊天界面） -->
-    <div v-if="isLoggedIn && !isAdminRoute" class="main-content" :class="{ 'lang-switching': isSwitchingLang }">
+    <div v-if="isLoggedIn && !isAdminRoute" class="main-content" :class="{ 'lang-switching': isSwitchingLang, 'session-busy': isSessionBusy }">
       <!-- 桌面端：并排显示 -->
       <template v-if="!isMobileView">
         <!-- 左侧聊天区 -->
       <div class="chat-section">
-          <aside class="session-sidebar" :class="{ collapsed: !isSessionSidebarExpanded }">
+          <aside class="session-sidebar" :class="{ collapsed: !isSessionSidebarExpanded, 'session-busy': isSessionBusy }">
             <div class="session-sidebar-header">
               <!-- 新建按钮 -->
               <button
                 class="session-create-btn"
                 @click="createSessionAndSwitch"
+                :class="{ loading: isSessionBusy }"
                 :disabled="isSessionSwitchLocked"
                 @mouseenter="(e) => showTooltip(e, isSessionSwitchLocked ? getSessionLockedHint() : '新建会话')"
                 @mouseleave="hideTooltip"
@@ -4478,6 +4479,11 @@ watch(
   cursor: not-allowed;
 }
 
+.session-create-btn.loading,
+.session-create-btn.loading:disabled {
+  cursor: progress;
+}
+
 /* 展开收起按钮 */
 .session-toggle-btn {
   width: 32px;
@@ -4553,6 +4559,13 @@ watch(
 .session-item-main:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.session-sidebar.session-busy,
+.session-sidebar.session-busy .session-item-main,
+.session-sidebar.session-busy .session-more-btn,
+.session-sidebar.session-busy .session-toggle-btn {
+  cursor: progress;
 }
 
 .session-item-title {
@@ -5240,6 +5253,17 @@ watch(
 .main-content.lang-switching,
 .resume-section.lang-switching,
 .mobile-resume-view.lang-switching {
+  cursor: progress;
+}
+
+.main-content.session-busy,
+.main-content.session-busy .chat-section,
+.main-content.session-busy .resume-section,
+.main-content.session-busy .session-sidebar,
+.main-content.session-busy .session-item-main,
+.main-content.session-busy .session-create-btn,
+.main-content.session-busy .session-toggle-btn,
+.main-content.session-busy .session-more-btn {
   cursor: progress;
 }
 
