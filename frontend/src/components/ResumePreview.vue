@@ -44,6 +44,12 @@ const props = defineProps({
     required: false,
     default: false
   },
+  // 父组件控制：语言切换中显示 loading 态光标
+  isLanguageSwitchLoading: {
+    type: Boolean,
+    required: false,
+    default: false
+  },
   // 父组件控制：AI回复中时禁用编辑/JD/导出等操作
   isOperationLocked: {
     type: Boolean,
@@ -712,7 +718,7 @@ const getItemIndex = (type, dataIndex) => {
           </div>
           <div class="toolbar-section toolbar-actions">
             <!-- 语言切换 -->
-            <div class="lang-toggle" :class="{ disabled: isLanguageSwitchDisabled }">
+            <div class="lang-toggle" :class="{ disabled: isLanguageSwitchDisabled, loading: isLanguageSwitchLoading }">
               <span
                 :class="{ active: lang === 'zh' }"
                 @click="!isLanguageSwitchDisabled && emit('toggle-lang', 'zh')"
@@ -1387,7 +1393,13 @@ const getItemIndex = (type, dataIndex) => {
 }
 .lang-toggle.disabled span {
   cursor: not-allowed;
-  pointer-events: none;
+  user-select: none;
+}
+.lang-toggle.loading {
+  opacity: 0.7;
+}
+.lang-toggle.loading span {
+  cursor: progress;
 }
 /* JD上传按钮 */
 .jd-upload-btn {

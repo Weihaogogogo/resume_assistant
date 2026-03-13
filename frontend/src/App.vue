@@ -17,6 +17,8 @@ let resizeObserver = null
 const currentLang = ref('zh')
 const showTranslateConfirm = ref(false)
 const pendingLang = ref('zh')  // 切换语言时的目标语言
+const isSwitchingLang = ref(false)
+const isLanguageSwitchDisabled = computed(() => isLoading.value || isResponding.value || isSwitchingLang.value)
 
 function resetLangToZhDefault() {
   currentLang.value = 'zh'
@@ -61,89 +63,96 @@ function hideTooltip() {
 
 // 语言切换函数
 async function switchLang(lang) {
-  // AI未结束回复时禁止切换
-  if (isLoading.value || isResponding.value) {
+  // AI未结束回复时或切换进行中，禁止切换
+  if (isLanguageSwitchDisabled.value) {
     return
   }
 
   const targetLang = lang
+  if (targetLang === currentLang.value) {
+    return
+  }
+
   const sourceLang = targetLang === 'zh' ? 'en' : 'zh'
+  isSwitchingLang.value = true
 
-  
-
-  // 判断简历是否有实际内容（不只是有basics对象）
-  const hasRealContent = (resume) => {
-    if (!resume) return false
-    // 检查是否有实际内容：basics有name，或者有education/work_experience等
-    const basics = resume.basics || {}
-    const hasName = !!basics.name
-    const hasEducation = (resume.education && resume.education.length > 0)
-    const hasWork = (resume.work_experience && resume.work_experience.length > 0)
-    const hasProject = (resume.project_experience && resume.project_experience.length > 0)
-    const hasOthers = (resume.others && (resume.others.skills?.length > 0 || resume.others.certificates?.length > 0 || resume.others.languages?.length > 0))
-    const hasSelfEval = (resume.self_evaluation && resume.self_evaluation.length > 0)
-    return hasName || hasEducation || hasWork || hasProject || hasOthers || hasSelfEval
-  }
-
-  // 获取切换前的目标简历状态（用于判断是否需要弹窗）
-  const targetResumeBeforeSwitch = targetLang === 'zh' ? zhResume.value : enResume.value
-  const wasTargetEmpty = !hasRealContent(targetResumeBeforeSwitch)
-
-
-  // 获取源语言简历
-  const sourceResume = sourceLang === 'zh' ? zhResume.value : enResume.value
-  const isSourceHasContent = hasRealContent(sourceResume)
-
-
-  // 步骤1：如果目标语言简历为空，则复制源语言简历到目标语言并保存
-  if (wasTargetEmpty && isSourceHasContent) {
-    const copiedResume = JSON.parse(JSON.stringify(sourceResume))
-    if (targetLang === 'zh') {
-      zhResume.value = copiedResume
-    } else {
-      enResume.value = copiedResume
-    }
-    // 保存到数据库
-    await saveResumeToBackend(copiedResume, targetLang)
-  } else {
-  }
-
-  // 步骤2：从后端重新加载目标语言的最新简历
   try {
-    const response = await fetch('/load_resume', {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        session_id: sessionId.value || 'default',
-        lang: targetLang
-      })
-    })
-
-    if (response.ok) {
-      const latestResume = await response.json()
-
-      // 更新对应语言的简历缓存
-      if (targetLang === 'zh') {
-        zhResume.value = latestResume
-      } else {
-        enResume.value = latestResume
-      }
-
-      // 切换语言
-      currentLang.value = targetLang
-      resumeData.value = latestResume
-
+    // 判断简历是否有实际内容（不只是有basics对象）
+    const hasRealContent = (resume) => {
+      if (!resume) return false
+      // 检查是否有实际内容：basics有name，或者有education/work_experience等
+      const basics = resume.basics || {}
+      const hasName = !!basics.name
+      const hasEducation = (resume.education && resume.education.length > 0)
+      const hasWork = (resume.work_experience && resume.work_experience.length > 0)
+      const hasProject = (resume.project_experience && resume.project_experience.length > 0)
+      const hasOthers = (resume.others && (resume.others.skills?.length > 0 || resume.others.certificates?.length > 0 || resume.others.languages?.length > 0))
+      const hasSelfEval = (resume.self_evaluation && resume.self_evaluation.length > 0)
+      return hasName || hasEducation || hasWork || hasProject || hasOthers || hasSelfEval
     }
-  } catch (error) {
-    console.error('切换语言时加载简历失败:', error)
-  }
 
-  // 步骤3：如果目标简历原本为空（现在已复制），弹窗询问是否翻译
-  if (wasTargetEmpty && isSourceHasContent) {
-    pendingLang.value = targetLang
-    showTranslateConfirm.value = true
+    // 获取切换前的目标简历状态（用于判断是否需要弹窗）
+    const targetResumeBeforeSwitch = targetLang === 'zh' ? zhResume.value : enResume.value
+    const wasTargetEmpty = !hasRealContent(targetResumeBeforeSwitch)
+
+
+    // 获取源语言简历
+    const sourceResume = sourceLang === 'zh' ? zhResume.value : enResume.value
+    const isSourceHasContent = hasRealContent(sourceResume)
+
+
+    // 步骤1：如果目标语言简历为空，则复制源语言简历到目标语言并保存
+    if (wasTargetEmpty && isSourceHasContent) {
+      const copiedResume = JSON.parse(JSON.stringify(sourceResume))
+      if (targetLang === 'zh') {
+        zhResume.value = copiedResume
+      } else {
+        enResume.value = copiedResume
+      }
+      // 保存到数据库
+      await saveResumeToBackend(copiedResume, targetLang)
+    } else {
+    }
+
+    // 步骤2：从后端重新加载目标语言的最新简历
+    try {
+      const response = await fetch('/load_resume', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          session_id: sessionId.value || 'default',
+          lang: targetLang
+        })
+      })
+
+      if (response.ok) {
+        const latestResume = await response.json()
+
+        // 更新对应语言的简历缓存
+        if (targetLang === 'zh') {
+          zhResume.value = latestResume
+        } else {
+          enResume.value = latestResume
+        }
+
+        // 切换语言
+        currentLang.value = targetLang
+        resumeData.value = latestResume
+
+      }
+    } catch (error) {
+      console.error('切换语言时加载简历失败:', error)
+    }
+
+    // 步骤3：如果目标简历原本为空（现在已复制），弹窗询问是否翻译
+    if (wasTargetEmpty && isSourceHasContent) {
+      pendingLang.value = targetLang
+      showTranslateConfirm.value = true
+    }
+    // 步骤4：如果目标简历原本就不为空，直接切换，不弹窗
+  } finally {
+    isSwitchingLang.value = false
   }
-  // 步骤4：如果目标简历原本就不为空，直接切换，不弹窗
 }
 
 // 保存简历到后端
@@ -3189,7 +3198,7 @@ watch(
     <router-view v-if="!isLoggedIn || isAdminRoute"></router-view>
 
     <!-- 已登录且非管理页面：显示主内容（聊天界面） -->
-    <div v-if="isLoggedIn && !isAdminRoute" class="main-content">
+    <div v-if="isLoggedIn && !isAdminRoute" class="main-content" :class="{ 'lang-switching': isSwitchingLang }">
       <!-- 桌面端：并排显示 -->
       <template v-if="!isMobileView">
         <!-- 左侧聊天区 -->
@@ -3387,9 +3396,9 @@ watch(
       </div>
 
       <!-- 右侧简历预览区 -->
-      <div class="resume-section">
+      <div class="resume-section" :class="{ 'lang-switching': isSwitchingLang }">
         <div class="resume-content">
-          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLoading || isResponding" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+          <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLanguageSwitchDisabled" :is-language-switch-loading="isSwitchingLang" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
         </div>
       </div>
       </template>
@@ -3471,8 +3480,8 @@ watch(
           </div>
 
           <!-- 简历 Tab 内容 -->
-          <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" key="resume">
-            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLoading || isResponding" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
+          <div v-else-if="currentTab === 'resume'" class="mobile-resume-view" :class="{ 'lang-switching': isSwitchingLang }" key="resume">
+            <ResumePreview :data="resumeData" :highlighted-module="highlightedModule" :jd-data="jdData" :is-mobile-view="isMobileView" :lang="currentLang" :session-id="sessionId" :is-language-switch-disabled="isLanguageSwitchDisabled" :is-language-switch-loading="isSwitchingLang" :is-operation-locked="isResponding" @open-jd-dialog="openJDDialog" @open-resume-edit="openResumeEditDialog" @toggle-lang="switchLang" />
           </div>
         </Transition>
 
@@ -5226,6 +5235,12 @@ watch(
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.main-content.lang-switching,
+.resume-section.lang-switching,
+.mobile-resume-view.lang-switching {
+  cursor: progress;
 }
 
 .loading-indicator {

@@ -592,7 +592,20 @@ def get_session_photo(db, user_id: int, session_id: str) -> str:
         Conversation.user_id == user_id,
         Conversation.session_id == session_id
     ).first()
-    return conv.photo if conv and conv.photo else ""
+    if not conv:
+        return ""
+
+    if conv.photo:
+        return conv.photo
+
+    # 兼容旧数据：会话级没有照片时，从旧的 Resume 表懒迁移
+    old_resume = db.query(Resume).filter(Resume.user_id == user_id).first()
+    if old_resume and old_resume.photo:
+        conv.photo = old_resume.photo
+        db.commit()
+        return conv.photo
+
+    return ""
 
 
 def save_session_photo(db, user_id: int, session_id: str, photo: str):
