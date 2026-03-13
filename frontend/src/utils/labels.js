@@ -19,7 +19,9 @@ export const labels = {
     degree: '学历',
     major: '专业',
     graduationDate: '毕业时间',
-    thesis: '论文',
+    majorCourses: '主修课程',
+    academicAchievements: '学术成果',
+    honorsAwards: '荣誉奖项',
 
     // 工作经历
     company: '公司',
@@ -84,7 +86,9 @@ export const labels = {
     degree: 'Degree',
     major: 'Major',
     graduationDate: 'Graduation Date',
-    thesis: 'Thesis',
+    majorCourses: 'Major Courses',
+    academicAchievements: 'Academic Achievements',
+    honorsAwards: 'Honors & Awards',
 
     // 工作经历
     company: 'Company',

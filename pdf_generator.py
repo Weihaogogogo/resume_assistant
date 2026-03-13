@@ -20,7 +20,9 @@ LABELS = {
         'skills': '技能',
         'certificates': '证书',
         'language': '语言',
-        'thesis': '论文',
+        'majorCourses': '主修课程',
+        'academicAchievements': '学术成果',
+        'honorsAwards': '荣誉奖项',
         'nameNotSet': '姓名未填写',
         'schoolNotSet': '学校未填写',
         'companyNotSet': '公司未填写',
@@ -36,7 +38,9 @@ LABELS = {
         'skills': 'Skills',
         'certificates': 'Certificates',
         'language': 'Language',
-        'thesis': 'Thesis',
+        'majorCourses': 'Major Courses',
+        'academicAchievements': 'Academic Achievements',
+        'honorsAwards': 'Honors & Awards',
         'nameNotSet': 'Name Not Set',
         'schoolNotSet': 'School Not Set',
         'companyNotSet': 'Company Not Set',
@@ -55,6 +59,21 @@ def format_markdown(text: str) -> str:
     # 处理斜体 *text* -> <i>text</i>（但避免处理列表项开头的*）
     text = re.sub(r'(?<!\*)\*(.+?)\*(?!\*)', r'<i>\1</i>', text)
     return text
+
+
+def join_education_values(values: list, lang: str = 'zh') -> str:
+    if not values or not isinstance(values, list):
+        return ""
+    separator = ", " if lang == 'en' else "、"
+    return separator.join(str(item).strip() for item in values if str(item).strip())
+
+def get_education_meta_items(edu: dict, labels: dict, lang: str = 'zh') -> list:
+    items = [
+        (labels["majorCourses"], join_education_values(edu.get("major_courses"), lang)),
+        (labels["academicAchievements"], join_education_values(edu.get("academic_achievements"), lang)),
+        (labels["honorsAwards"], join_education_values(edu.get("honors_awards"), lang)),
+    ]
+    return [(label, value) for label, value in items if value]
 
 
 def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = None, lang: str = 'zh') -> str:
@@ -154,21 +173,14 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
             html_parts.append(f'<div class="graduation-date">{date_str}</div>')
             html_parts.append('</div>')
 
-            # 论文
-            if edu.get("theses") and len(edu["theses"]) > 0:
-                html_parts.append('<div class="theses">')
-                html_parts.append(f'<h4 class="subfield-title">{labels["thesis"]}</h4>')
-                for thesis in edu["theses"]:
-                    if isinstance(thesis, dict):
-                        html_parts.append('<div class="thesis-item">')
-                        if thesis.get("title"):
-                            html_parts.append(f'<div class="thesis-title">{format_markdown(thesis["title"])}</div>')
-                        if thesis.get("details") and isinstance(thesis["details"], list):
-                            html_parts.append('<ul class="list-items">')
-                            for detail in thesis["details"]:
-                                html_parts.append(f'<li class="list-item">{format_markdown(detail)}</li>')
-                            html_parts.append('</ul>')
-                        html_parts.append('</div>')
+            education_meta_items = get_education_meta_items(edu, labels, lang)
+            if education_meta_items:
+                html_parts.append('<div class="education-meta-group">')
+                for label, value in education_meta_items:
+                    html_parts.append(
+                        f'<div class="education-meta-line"><span class="education-meta-label">{label}：</span>'
+                        f'<span class="education-meta-value">{format_markdown(value)}</span></div>'
+                    )
                 html_parts.append('</div>')
 
             html_parts.append('</div>')
@@ -408,12 +420,6 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
         margin-bottom: 0.5em;
     }}
 
-    .thesis-item {{
-        page-break-inside: avoid;
-        break-inside: avoid;
-        -webkit-column-break-inside: avoid;
-    }}
-
     .education-header,
     .work-header,
     .project-header {{
@@ -458,6 +464,7 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
         font-size: 0.8em;
         font-weight: 500;
         color: #6c757d;
+        margin-bottom: 0.1em;
     }}
 
     .graduation-date,
@@ -468,21 +475,22 @@ def render_resume_to_html(resume_data: dict, style: dict = None, photo: str = No
         font-weight: 500;
     }}
 
-    .theses {{
-        margin-top: 0.25em;
+    .education-meta-group {{
+        margin-top: 0.1em;
     }}
 
-    .thesis-title {{
-        font-weight: 600;
-        font-size: 0.85em;
+    .education-meta-line {{
+        font-size: 0.8em;
+        color: #212529;
+        line-height: {line_height};
     }}
 
-    .subfield-title {{
-        font-size: 0.825em;
-        font-weight: 600;
-        color: #6c757d;
-        margin-bottom: 0.25em;
-        display: block;
+    .education-meta-label {{
+        font-weight: 700;
+    }}
+
+    .education-meta-value {{
+        color: #495057;
     }}
 
     .company {{

@@ -80,12 +80,6 @@ class BasicInfo(BaseModel):
     target_position: str = Field(..., description="期望岗位")
 
 
-class Thesis(BaseModel):
-    """论文信息"""
-    title: str = Field(..., description="论文标题")
-    details: List[str] = Field(default_factory=list, description="论文详细内容")
-
-
 class Education(BaseModel):
     """教育背景"""
     school_name: str = Field(..., description="学校名称")
@@ -93,7 +87,9 @@ class Education(BaseModel):
     degree: str = Field(..., description="学历")
     date_range: List[str] = Field(..., description="就读时间")
     school_tags: List[str] = Field(default_factory=list, description="学校性质标签")
-    theses: List[Thesis] = Field(default_factory=list, description="论文列表")
+    major_courses: List[str] = Field(default_factory=list, description="主修课程")
+    academic_achievements: List[str] = Field(default_factory=list, description="学术成果")
+    honors_awards: List[str] = Field(default_factory=list, description="荣誉奖项")
 
 
 class WorkExperience(BaseModel):
@@ -225,7 +221,7 @@ CONVERSATION_PROMPT = """
 ## 标准优化顺序，你必须严格按照以下顺序逐步优化简历，**每次只聚焦一个模块**，不要跳跃：
 1. **目标岗位**：如果你没有任何关于用户目标岗位或意愿的信息，不要进行假设，优先引导用户**点击页面右上角的“目标岗位”按钮上传目标岗位JD（文本或图片）**，或者如果没有明确的目标岗位，至少引导用户输入一个明确的期望岗位名称（如"我想申请字节跳动的产品经理岗位"），以便后续优化有明确的方向。
 2. **基础信息**：姓名、手机、邮箱、期望岗位 （重要，绝对不能缺漏！）
-3. **教育经历**：学校、专业、学位、时间、亮点标签
+3. **教育经历**：学校、专业、学位、时间、亮点标签、主修课程、学术成果、荣誉奖项（如有）
 4. **工作经历**：公司、职位、时间、STAR 描述、量化结果
 5. **项目经历**：项目名、角色、技术栈、STAR 描述、量化成果
 6. **其他**：技能、证书、语言
@@ -312,7 +308,9 @@ CONVERSATION_PROMPT = """
     "degree": "学位",
     "date_range": ["开始时间", "结束时间"],
     "school_tags": ["标签1", "标签2"],
-    "theses": []
+    "major_courses": ["主修课程1", "主修课程2"],
+    "academic_achievements": ["学术成果1", "学术成果2"],
+    "honors_awards": ["荣誉奖项1", "荣誉奖项2"]
   }],
   "work_experience": [{
     "company_name": "公司",
@@ -432,7 +430,9 @@ RESUME_FULL_EXTRACT_PROMPT = '''# Role
     "degree": "学位",
     "date_range": ["开始时间", "结束时间"],
     "school_tags": ["标签1", "标签2"],
-    "theses": []
+    "major_courses": ["主修课程1", "主修课程2"],
+    "academic_achievements": ["学术成果1", "学术成果2"],
+    "honors_awards": ["荣誉奖项1", "荣誉奖项2"]
   }],
   "work_experience": [{
     "company_name": "公司",

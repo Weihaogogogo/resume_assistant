@@ -121,12 +121,6 @@ const allItems = computed(() => {
     items.push({ type: 'education-title', index: index++, visible: true })
     props.data.education.forEach((edu, i) => {
       items.push({ type: 'education-item', dataIndex: i, index: index++, visible: true })
-      // 添加论文作为独立的可分页项
-      if (edu.theses?.length) {
-        edu.theses.forEach((_, tIdx) => {
-          items.push({ type: 'thesis-item', dataIndex: `${i}-${tIdx}`, index: index++, visible: true })
-        })
-      }
     })
   }
 
@@ -460,6 +454,20 @@ const formatText = (text) => {
   return text.trim().replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
 }
 
+const joinEducationValues = (values) => {
+  if (!Array.isArray(values) || !values.length) return ''
+  const separator = props.lang === 'en' ? ', ' : '、'
+  return values.map(item => item?.trim()).filter(Boolean).join(separator)
+}
+
+const getEducationMetaItems = (item) => {
+  return [
+    { key: 'major_courses', label: t.value.majorCourses, value: joinEducationValues(item.major_courses) },
+    { key: 'academic_achievements', label: t.value.academicAchievements, value: joinEducationValues(item.academic_achievements) },
+    { key: 'honors_awards', label: t.value.honorsAwards, value: joinEducationValues(item.honors_awards) }
+  ].filter(meta => meta.value)
+}
+
 // ========== 导出PDF（调用后端API，使用WeasyPrint生成矢量PDF）============
 const showSuccessDialog = ref(false)
 const isExportingPDF = ref(false)
@@ -790,20 +798,13 @@ const getItemIndex = (type, dataIndex) => {
             <span class="graduation-date">{{ item.date_range?.[0] || '' }} - {{ item.date_range?.[1] || '至今' }}</span>
           </div>
           <div class="degree-major" v-html="formatText(`${item.degree || ''} ${item.major || ''}`)"></div>
+          <div v-if="getEducationMetaItems(item).length" class="education-meta-group">
+            <div v-for="meta in getEducationMetaItems(item)" :key="meta.key" class="education-meta-line">
+              <span class="education-meta-label">{{ meta.label }}：</span>
+              <span class="education-meta-value" v-html="formatText(meta.value)"></span>
+            </div>
+          </div>
         </div>
-        <template v-if="data.education">
-          <template v-for="(item, idx) in data.education">
-            <template v-if="item.theses?.length">
-              <div v-for="(thesis, tIdx) in item.theses" :key="'thesis-'+idx+'-'+tIdx" class="pageable-item thesis-item">
-                <h4 class="subfield-title">{{ t.thesis }}</h4>
-                <div class="thesis-title" v-html="formatText(thesis.title)"></div>
-                <ul v-if="thesis.details?.length" class="list-items">
-                  <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
-                </ul>
-              </div>
-            </template>
-          </template>
-        </template>
       </template>
 
       <!-- {{ t.workExperience }} -->
@@ -931,16 +932,12 @@ const getItemIndex = (type, dataIndex) => {
             <span class="graduation-date">{{ item.date_range?.[0] || '' }} - {{ item.date_range?.[1] || '至今' }}</span>
           </div>
           <div class="degree-major" v-html="formatText(`${item.degree || ''} ${item.major || ''}`)"></div>
-          <!-- 论文 -->
-          <template v-if="item.theses?.length">
-            <div v-for="(thesis, tIdx) in item.theses" :key="'thesis-'+idx+'-'+tIdx" class="thesis-item">
-              <h4 class="subfield-title">{{ t.thesis }}</h4>
-              <div class="thesis-title" v-html="formatText(thesis.title)"></div>
-              <ul v-if="thesis.details?.length" class="list-items">
-                <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
-              </ul>
+          <div v-if="getEducationMetaItems(item).length" class="education-meta-group">
+            <div v-for="meta in getEducationMetaItems(item)" :key="meta.key" class="education-meta-line">
+              <span class="education-meta-label">{{ meta.label }}：</span>
+              <span class="education-meta-value" v-html="formatText(meta.value)"></span>
             </div>
-          </template>
+          </div>
         </div>
       </template>
 
@@ -1049,19 +1046,13 @@ const getItemIndex = (type, dataIndex) => {
                     <span class="graduation-date">{{ item.date_range?.[0] || '' }} - {{ item.date_range?.[1] || '至今' }}</span>
                   </div>
                   <div class="degree-major" v-html="formatText(`${item.degree || ''} ${item.major || ''}`)"></div>
-                </div>
-                <!-- 论文（独立分页项） -->
-                <template v-if="item.theses?.length">
-                  <template v-for="(thesis, tIdx) in item.theses">
-                    <div v-if="isItemVisible({index: getItemIndex('thesis-item', `${idx}-${tIdx}`)}, page - 1)" :key="'thesis-'+idx+'-'+tIdx" class="thesis-item">
-                      <h4 class="subfield-title">{{ t.thesis }}</h4>
-                      <div class="thesis-title" v-html="formatText(thesis.title)"></div>
-                      <ul v-if="thesis.details?.length" class="list-items">
-                        <li v-for="(detail, dIdx) in thesis.details" :key="dIdx" class="list-item" v-html="formatText(detail)"></li>
-                      </ul>
+                  <div v-if="getEducationMetaItems(item).length" class="education-meta-group">
+                    <div v-for="meta in getEducationMetaItems(item)" :key="meta.key" class="education-meta-line">
+                      <span class="education-meta-label">{{ meta.label }}：</span>
+                      <span class="education-meta-value" v-html="formatText(meta.value)"></span>
                     </div>
-                  </template>
-                </template>
+                  </div>
+                </div>
               </template>
             </template>
 
@@ -1619,6 +1610,23 @@ const getItemIndex = (type, dataIndex) => {
   color: #6c757d;
   font-weight: 500;
 }
+.degree-major {
+  margin-bottom: 0.1em;
+}
+.education-meta-group {
+  margin-top: 0.1em;
+}
+.education-meta-line {
+  font-size: 0.8em;
+  color: #212529;
+  line-height: var(--line-height, 1.6);
+}
+.education-meta-label {
+  font-weight: 700;
+}
+.education-meta-value {
+  color: #495057;
+}
 .list-items {
   list-style: none;
   padding: 0;
@@ -1680,20 +1688,6 @@ const getItemIndex = (type, dataIndex) => {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5em;
-}
-.thesis-item {
-  margin-top: 0.25em;
-}
-.thesis-title {
-  font-weight: 600;
-  font-size: 0.85em;
-}
-.subfield-title {
-  font-size: 0.825em;
-  font-weight: 600;
-  color: #6c757d;
-  margin-bottom: 0.25em;
-  display: block;
 }
 .inline-list {
   display: inline;

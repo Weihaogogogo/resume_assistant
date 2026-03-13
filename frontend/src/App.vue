@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import ChatMessage from './components/ChatMessage.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import RichTextEditor from './components/RichTextEditor.vue'
+import MonthRangePresentPicker from './components/MonthRangePresentPicker.vue'
 import MobileTabBar from './components/MobileTabBar.vue'
 import { labels } from './utils/labels.js'
 
@@ -1800,12 +1801,12 @@ function openResumeEditDialog() {
     if (!item.date_range) {
       item.date_range = ['', '']
     }
-    // 设置临时日期范围数组（用于 el-date-picker）
-    const start = item.date_range[0] ? item.date_range[0].replace('.', '-') : null
+    const start = item.date_range[0] ? item.date_range[0].replace('.', '-') : ''
     const end = item.date_range[1] && item.date_range[1] !== '至今'
       ? item.date_range[1].replace('.', '-')
-      : null
-    item._dateRange = start && end ? [start, end] : (start ? [start, null] : null)
+      : ''
+    item._startDate = start
+    item._endDate = end
     item._isPresent = item.date_range[1] === '至今'
   }
 
@@ -1824,6 +1825,12 @@ function openResumeEditDialog() {
   // 为每项教育经历初始化日期
   resumeFormData.value.education.forEach(edu => {
     initDateRange(edu)
+    edu.major_courses = edu.major_courses || []
+    edu.academic_achievements = edu.academic_achievements || []
+    edu.honors_awards = edu.honors_awards || []
+    edu._majorCoursesText = arrayToEducationText(edu.major_courses)
+    edu._academicAchievementsText = arrayToEducationText(edu.academic_achievements)
+    edu._honorsAwardsText = arrayToEducationText(edu.honors_awards)
   })
 
   // 转换自我评价为多行文本
@@ -1832,41 +1839,14 @@ function openResumeEditDialog() {
   isResumeEditDialogOpen.value = true
 }
 
-// 处理"至今"复选框变化
-function onPresentChange(item) {
-  if (item._isPresent) {
-    // 如果选中"至今"，保留开始日期，清空结束日期
-    if (item._dateRange && item._dateRange.length === 2) {
-      item._dateRange[1] = null
-    }
-  } else {
-    // 如果取消"至今"，需要恢复结束日期选择
-    if (item._dateRange && item._dateRange.length === 2) {
-      // 如果原来有结束日期，恢复它
-      if (item.date_range && item.date_range[1] && item.date_range[1] !== '至今') {
-        item._dateRange[1] = item.date_range[1].replace('.', '-')
-      } else {
-        // 没有结束日期时，设置一个默认值（当前月）
-        const now = new Date()
-        item._dateRange[1] = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-      }
-    }
-  }
-}
-
 // 将日期范围转换为保存格式
 function convertDateRangeToSave(item) {
-  if (item._dateRange && item._dateRange.length === 2) {
-    const start = item._dateRange[0] ? item._dateRange[0].replace('-', '.') : ''
-    const end = item._isPresent ? '至今' : (item._dateRange[1] ? item._dateRange[1].replace('-', '.') : '')
-    item.date_range = [start, end]
-  } else if (item._dateRange && item._dateRange.length === 1) {
-    item.date_range = [item._dateRange[0].replace('-', '.'), item._isPresent ? '至今' : '']
-  } else {
-    item.date_range = ['', item._isPresent ? '至今' : '']
-  }
+  const start = item._startDate ? item._startDate.replace('-', '.') : ''
+  const end = item._isPresent ? '至今' : (item._endDate ? item._endDate.replace('-', '.') : '')
+  item.date_range = [start, end]
   // 清理临时字段
-  delete item._dateRange
+  delete item._startDate
+  delete item._endDate
   delete item._isPresent
 }
 
@@ -1978,7 +1958,12 @@ function addEducation() {
     degree: '',
     date_range: ['', ''],
     school_tags: [],
-    theses: []
+    major_courses: [],
+    academic_achievements: [],
+    honors_awards: [],
+    _majorCoursesText: '',
+    _academicAchievementsText: '',
+    _honorsAwardsText: ''
   })
 }
 
@@ -2104,6 +2089,19 @@ function formatDateForSave(dateStr) {
   return dateStr.replace('-', '.')
 }
 
+function arrayToEducationText(arr) {
+  if (!arr || !Array.isArray(arr)) return ''
+  return arr.map(item => item?.trim()).filter(Boolean).join('、')
+}
+
+function educationTextToArray(text) {
+  if (!text) return []
+  return text
+    .split(/[\n、,，;；]+/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
 // 将数组转换为多行文本（用于编辑）
 function arrayToMultiline(arr) {
   if (!arr || !Array.isArray(arr)) return ''
@@ -2116,9 +2114,42 @@ function multilineToArray(text) {
   return text.split('\n').map(line => line.trim()).filter(line => line)
 }
 
+function getDateRangeValidationMessage(item, sectionLabel, index) {
+  const start = (item?._startDate || '').trim()
+  const end = (item?._endDate || '').trim()
+  const isPresent = Boolean(item?._isPresent)
+
+  if (!start && !end && !isPresent) return ''
+  if (!start) return `${sectionLabel}${index + 1}的时间范围缺少开始时间`
+  if (!isPresent && !end) return `${sectionLabel}${index + 1}的时间范围缺少结束时间，或请勾选“至今”`
+  return ''
+}
+
+function validateResumeDateRanges() {
+  const validations = [
+    { items: resumeFormData.value.education || [], label: '教育经历 ' },
+    { items: resumeFormData.value.work_experience || [], label: '工作经历 ' },
+    { items: resumeFormData.value.project_experience || [], label: '项目经历 ' }
+  ]
+
+  for (const { items, label } of validations) {
+    for (const [index, item] of items.entries()) {
+      const message = getDateRangeValidationMessage(item, label, index)
+      if (message) return message
+    }
+  }
+
+  return ''
+}
+
 // 保存简历
 async function saveResume() {
   if (guardWhileResponding('简历保存')) return
+  const dateRangeError = validateResumeDateRanges()
+  if (dateRangeError) {
+    alert(dateRangeError)
+    return
+  }
   isSaving.value = true
   try {
     // 复制数据进行处理
@@ -2132,6 +2163,13 @@ async function saveResume() {
     // 处理日期格式：确保是 YYYY.MM 格式
     dataToSave.education?.forEach(edu => {
       convertDateRangeToSave(edu)
+      edu.major_courses = educationTextToArray(edu._majorCoursesText)
+      edu.academic_achievements = educationTextToArray(edu._academicAchievementsText)
+      edu.honors_awards = educationTextToArray(edu._honorsAwardsText)
+      delete edu._majorCoursesText
+      delete edu._academicAchievementsText
+      delete edu._honorsAwardsText
+      delete edu.theses
     })
     dataToSave.work_experience?.forEach(work => {
       convertDateRangeToSave(work)
@@ -3839,31 +3877,11 @@ watch(
                 </div>
                 <div class="field-group full-width">
                   <label>时间范围</label>
-                  <div class="date-range-wrapper">
-                    <template v-if="!edu._isPresent">
-                      <el-date-picker
-                        v-model="edu._dateRange"
-                        type="monthrange"
-                        range-separator="至"
-                        start-placeholder="开始时间"
-                        end-placeholder="结束时间"
-                        format="YYYY.MM"
-                        value-format="YYYY-MM"
-                        class="element-date-picker"
-                      />
-                    </template>
-                    <template v-else>
-                      <div class="present-date-display">
-                        <span class="present-start-date">{{ edu._dateRange?.[0]?.replace('-', '.') || '' }}</span>
-                        <span class="present-separator">至</span>
-                        <span class="present-end-text">至今</span>
-                      </div>
-                    </template>
-                    <label class="present-label">
-                      <input type="checkbox" v-model="edu._isPresent" @change="onPresentChange(edu)" />
-                      至今
-                    </label>
-                  </div>
+                  <MonthRangePresentPicker
+                    v-model:start="edu._startDate"
+                    v-model:end="edu._endDate"
+                    v-model:is-present="edu._isPresent"
+                  />
                 </div>
                 <div class="field-group full-width">
                   <label>学校标签</label>
@@ -3874,6 +3892,35 @@ watch(
                     </span>
                     <input v-model="edu.newSchoolTag" @keydown.enter="addSchoolTag(edu)" placeholder="回车添加标签" class="tag-input" />
                   </div>
+                </div>
+              </div>
+              <div class="array-item-nested">
+                <div class="field-group full-width">
+                  <label>主修课程</label>
+                  <textarea
+                    v-model="edu._majorCoursesText"
+                    rows="2"
+                    placeholder="请输入主修课程，用顿号、逗号或换行分隔"
+                    class="multiline-textarea"
+                  ></textarea>
+                </div>
+                <div class="field-group full-width">
+                  <label>学术成果</label>
+                  <textarea
+                    v-model="edu._academicAchievementsText"
+                    rows="2"
+                    placeholder="请输入学术成果，用顿号、逗号或换行分隔"
+                    class="multiline-textarea"
+                  ></textarea>
+                </div>
+                <div class="field-group full-width">
+                  <label>荣誉奖项</label>
+                  <textarea
+                    v-model="edu._honorsAwardsText"
+                    rows="2"
+                    placeholder="请输入荣誉奖项，用顿号、逗号或换行分隔"
+                    class="multiline-textarea"
+                  ></textarea>
                 </div>
               </div>
             </div>
@@ -3904,31 +3951,11 @@ watch(
                 </div>
                 <div class="field-group full-width">
                   <label>时间范围</label>
-                  <div class="date-range-wrapper">
-                    <template v-if="!work._isPresent">
-                      <el-date-picker
-                        v-model="work._dateRange"
-                        type="monthrange"
-                        range-separator="至"
-                        start-placeholder="开始时间"
-                        end-placeholder="结束时间"
-                        format="YYYY.MM"
-                        value-format="YYYY-MM"
-                        class="element-date-picker"
-                      />
-                    </template>
-                    <template v-else>
-                      <div class="present-date-display">
-                        <span class="present-start-date">{{ work._dateRange?.[0]?.replace('-', '.') || '' }}</span>
-                        <span class="present-separator">至</span>
-                        <span class="present-end-text">至今</span>
-                      </div>
-                    </template>
-                    <label class="present-label">
-                      <input type="checkbox" v-model="work._isPresent" @change="onPresentChange(work)" />
-                      至今
-                    </label>
-                  </div>
+                  <MonthRangePresentPicker
+                    v-model:start="work._startDate"
+                    v-model:end="work._endDate"
+                    v-model:is-present="work._isPresent"
+                  />
                 </div>
               </div>
               <!-- 工作内容 -->
@@ -3961,31 +3988,11 @@ watch(
                 </div>
                 <div class="field-group full-width">
                   <label>时间范围</label>
-                  <div class="date-range-wrapper">
-                    <template v-if="!proj._isPresent">
-                      <el-date-picker
-                        v-model="proj._dateRange"
-                        type="monthrange"
-                        range-separator="至"
-                        start-placeholder="开始时间"
-                        end-placeholder="结束时间"
-                        format="YYYY.MM"
-                        value-format="YYYY-MM"
-                        class="element-date-picker"
-                      />
-                    </template>
-                    <template v-else>
-                      <div class="present-date-display">
-                        <span class="present-start-date">{{ proj._dateRange?.[0]?.replace('-', '.') || '' }}</span>
-                        <span class="present-separator">至</span>
-                        <span class="present-end-text">至今</span>
-                      </div>
-                    </template>
-                    <label class="present-label">
-                      <input type="checkbox" v-model="proj._isPresent" @change="onPresentChange(proj)" />
-                      至今
-                    </label>
-                  </div>
+                  <MonthRangePresentPicker
+                    v-model:start="proj._startDate"
+                    v-model:end="proj._endDate"
+                    v-model:is-present="proj._isPresent"
+                  />
                 </div>
               </div>
               <!-- 项目内容 -->
@@ -6138,6 +6145,22 @@ watch(
   margin-top: 0.75rem;
 }
 
+.nested-array-header {
+  margin-bottom: 0.5rem;
+}
+
+.nested-add-btn {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.625rem;
+}
+
+.nested-empty-state {
+  padding: 0.75rem;
+  border: 1px dashed #303030;
+  font-size: 0.75rem;
+  color: #666;
+}
+
 .array-item-nested > label {
   display: block;
   font-size: 0.75rem;
@@ -6216,84 +6239,6 @@ watch(
   border-color: #303030;
 }
 
-/* 日期选择器样式 */
-.date-range-wrapper {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.element-date-picker {
-  flex: 1;
-}
-
-.element-date-picker :deep(.el-input__wrapper) {
-  background: #fafafa;
-  border-color: #e9ecef;
-}
-
-.element-date-picker :deep(.el-input__wrapper:hover) {
-  border-color: #dee2e6;
-}
-
-.element-date-picker :deep(.el-input__wrapper.is-focus) {
-  background: #fff;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
-}
-
-.present-label {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.present-label input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
-
-.present-text {
-  color: var(--primary-color);
-  font-weight: 500;
-  font-size: 0.9rem;
-  padding: 0.4rem 0.8rem;
-  background: rgba(59, 130, 246, 0.1);
-  border-radius: var(--radius-sm);
-}
-
-.present-date-display {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: #fafafa;
-  border: 1px solid #e9ecef;
-  border-radius: var(--radius-sm);
-  flex: 1;
-}
-
-.present-start-date {
-  color: var(--text-primary);
-  font-size: 0.85rem;
-}
-
-.present-separator {
-  color: #adb5bd;
-  font-size: 0.85rem;
-}
-
-.present-end-text {
-  color: var(--primary-color);
-  font-weight: 500;
-  font-size: 0.85rem;
-}
-
 /* Element UI 组件样式 */
 .element-input {
   width: 100%;
@@ -6332,26 +6277,6 @@ watch(
 }
 
 .element-select :deep(.el-input__wrapper.is-focus) {
-  background: #fff;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
-}
-
-.element-date-picker {
-  width: 100%;
-}
-
-.element-date-picker :deep(.el-input__wrapper) {
-  background: #fafafa;
-  border-color: #e9ecef;
-  border-radius: var(--radius-sm);
-}
-
-.element-date-picker :deep(.el-input__wrapper:hover) {
-  border-color: #dee2e6;
-}
-
-.element-date-picker :deep(.el-input__wrapper.is-focus) {
   background: #fff;
   border-color: var(--primary-color);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
