@@ -1972,6 +1972,19 @@ function removeEducation(index) {
   resumeFormData.value.education.splice(index, 1)
 }
 
+function moveArrayItem(items, fromIndex, offset) {
+  const toIndex = fromIndex + offset
+  if (!Array.isArray(items)) return
+  if (fromIndex < 0 || toIndex < 0) return
+  if (fromIndex >= items.length || toIndex >= items.length) return
+  const [movedItem] = items.splice(fromIndex, 1)
+  items.splice(toIndex, 0, movedItem)
+}
+
+function moveEducation(index, offset) {
+  moveArrayItem(resumeFormData.value.education, index, offset)
+}
+
 // 添加学校标签
 function addSchoolTag(edu) {
   if (edu.newSchoolTag && edu.newSchoolTag.trim()) {
@@ -1994,6 +2007,10 @@ function addWork() {
 // 删除工作经历
 function removeWork(index) {
   resumeFormData.value.work_experience.splice(index, 1)
+}
+
+function moveWork(index, offset) {
+  moveArrayItem(resumeFormData.value.work_experience, index, offset)
 }
 
 // 添加工作内容
@@ -2019,6 +2036,10 @@ function addProject() {
 // 删除项目经历
 function removeProject(index) {
   resumeFormData.value.project_experience.splice(index, 1)
+}
+
+function moveProject(index, offset) {
+  moveArrayItem(resumeFormData.value.project_experience, index, offset)
 }
 
 // 添加项目内容
@@ -3851,8 +3872,24 @@ watch(
             <h4 class="section-title">教育背景</h4>
             <div v-for="(edu, i) in resumeFormData.education" :key="i" class="array-item">
               <div class="array-item-header">
-                <span>学历 {{ i + 1 }}</span>
-                <button @click="removeEducation(i)" class="remove-btn">删除</button>
+                <span class="array-item-title">学历 {{ i + 1 }}</span>
+                <div class="array-item-actions">
+                  <button
+                    v-if="i > 0"
+                    @click="moveEducation(i, -1)"
+                    class="move-btn"
+                    type="button"
+                    aria-label="上移学历"
+                  >上移</button>
+                  <button
+                    v-if="i < resumeFormData.education.length - 1"
+                    @click="moveEducation(i, 1)"
+                    class="move-btn"
+                    type="button"
+                    aria-label="下移学历"
+                  >下移</button>
+                  <button @click="removeEducation(i)" class="remove-btn" type="button">删除</button>
+                </div>
               </div>
               <div class="form-grid">
                 <div class="field-group">
@@ -3930,8 +3967,24 @@ watch(
             <h4 class="section-title">工作经历</h4>
             <div v-for="(work, i) in resumeFormData.work_experience" :key="i" class="array-item">
               <div class="array-item-header">
-                <span>工作 {{ i + 1 }}</span>
-                <button @click="removeWork(i)" class="remove-btn">删除</button>
+                <span class="array-item-title">工作 {{ i + 1 }}</span>
+                <div class="array-item-actions">
+                  <button
+                    v-if="i > 0"
+                    @click="moveWork(i, -1)"
+                    class="move-btn"
+                    type="button"
+                    aria-label="上移工作经历"
+                  >上移</button>
+                  <button
+                    v-if="i < resumeFormData.work_experience.length - 1"
+                    @click="moveWork(i, 1)"
+                    class="move-btn"
+                    type="button"
+                    aria-label="下移工作经历"
+                  >下移</button>
+                  <button @click="removeWork(i)" class="remove-btn" type="button">删除</button>
+                </div>
               </div>
               <div class="form-grid">
                 <div class="field-group">
@@ -3974,8 +4027,24 @@ watch(
             <h4 class="section-title">项目经历</h4>
             <div v-for="(proj, i) in resumeFormData.project_experience" :key="i" class="array-item">
               <div class="array-item-header">
-                <span>项目 {{ i + 1 }}</span>
-                <button @click="removeProject(i)" class="remove-btn">删除</button>
+                <span class="array-item-title">项目 {{ i + 1 }}</span>
+                <div class="array-item-actions">
+                  <button
+                    v-if="i > 0"
+                    @click="moveProject(i, -1)"
+                    class="move-btn"
+                    type="button"
+                    aria-label="上移项目经历"
+                  >上移</button>
+                  <button
+                    v-if="i < resumeFormData.project_experience.length - 1"
+                    @click="moveProject(i, 1)"
+                    class="move-btn"
+                    type="button"
+                    aria-label="下移项目经历"
+                  >下移</button>
+                  <button @click="removeProject(i)" class="remove-btn" type="button">删除</button>
+                </div>
               </div>
               <div class="form-grid">
                 <div class="field-group">
@@ -5827,7 +5896,7 @@ watch(
 }
 
 /* 子项标题（学历1、工作1、项目1） */
-.array-item-header span {
+.array-item-title {
   font-size: 0.75rem;
   color: #6c757d;
   font-weight: 500;
@@ -6141,6 +6210,12 @@ watch(
   letter-spacing: 0.1em;
 }
 
+.array-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .array-item-nested {
   margin-top: 0.75rem;
 }
@@ -6217,6 +6292,23 @@ watch(
 }
 
 .add-nested-btn:hover {
+  background: #f8bebe;
+  border-color: #303030;
+}
+
+.move-btn {
+  color: #303030;
+  background: none;
+  border: 1px dashed #303030;
+  cursor: pointer;
+  font-family: 'GTPressuraMono-Light', sans-serif;
+  font-size: 0.6875rem;
+  padding: 0.25rem 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.move-btn:hover {
   background: #f8bebe;
   border-color: #303030;
 }
