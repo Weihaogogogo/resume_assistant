@@ -168,13 +168,13 @@ LLM_API_KEY = _read_env("LLM_API_KEY")
 LLM_BASE_URL = _read_env("BASE_URL")
 
 httpx_client = httpx.Client(
-    timeout=httpx.Timeout(90.0),
+    timeout=httpx.Timeout(300.0),
     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     trust_env=False,
 )
 
 httpx_async_client = httpx.AsyncClient(
-    timeout=httpx.Timeout(90.0),
+    timeout=httpx.Timeout(300.0),
     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     trust_env=False,
 )
